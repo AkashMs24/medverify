@@ -44,8 +44,8 @@ function parseDate(dateStr) {
     const d = new Date(dateStr);
     if (!isNaN(d.getTime())) return d;
     const formats = [
-      /(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})/,
-      /(\\w+)\\s+(\\d{1,2}),?\\s+(\\d{4})/
+      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/,
+      /(\w+)\s+(\d{1,2}),?\s+(\d{4})/
     ];
     for (const fmt of formats) {
       const m = dateStr.match(fmt);
@@ -63,12 +63,16 @@ function daysBetween(d1, d2) {
   return Math.round(Math.abs((d2 - d1) / (1000 * 60 * 60 * 24)));
 }
 
-// ── BLANK TEMPLATE DETECTION ─────────────────────────────────────────────────
+// ── BLANK TEMPLATE DETECTION ──────────────────────────────────────────────────
 function detectBlankTemplate(info) {
   const coreFields = ['patientName', 'doctorName', 'issueDate', 'diagnosis'];
-  const blankCore = coreFields.filter(f => !info[f] || info[f].trim() === '' || info[f] === 'Not found');
+  const blankCore = coreFields.filter(f =>
+    !info[f] || info[f].trim() === '' || info[f] === 'Not found'
+  );
   const allFields = Object.keys(info);
-  const blankAll = allFields.filter(f => !info[f] || info[f] === '—' || info[f].trim() === '' || info[f] === 'Not found');
+  const blankAll = allFields.filter(f =>
+    !info[f] || info[f] === '—' || info[f].trim() === '' || info[f] === 'Not found'
+  );
   const blankRatio = blankAll.length / allFields.length;
 
   return {
@@ -89,7 +93,7 @@ function getFieldConfidence(value, fieldType) {
         ? { confidence: 95, label: 'High' }
         : { confidence: 40, label: 'Low' };
     case 'phone':
-      return /^\\+?[\\d\\s\\-().]{7,15}$/.test(value.replace(/\\s/g, ''))
+      return /^\+?[\d\s\-(). ]{7,15}$/.test(value.replace(/\s/g, ''))
         ? { confidence: 90, label: 'High' }
         : { confidence: 35, label: 'Low' };
     case 'regnum':
@@ -109,18 +113,18 @@ function getFieldConfidence(value, fieldType) {
 
 function buildConfidenceMap(info) {
   return {
-    doctorName:          getFieldConfidence(info.doctorName, 'name'),
-    hospitalName:        getFieldConfidence(info.hospitalName, 'name'),
-    patientName:         getFieldConfidence(info.patientName, 'name'),
-    diagnosis:           getFieldConfidence(info.diagnosis, 'text'),
-    issueDate:           getFieldConfidence(info.issueDate, 'date'),
-    leaveFrom:           getFieldConfidence(info.leaveFrom, 'date'),
-    leaveTo:             getFieldConfidence(info.leaveTo, 'date'),
-    phone:               getFieldConfidence(info.phone, 'phone'),
-    referenceNumber:     getFieldConfidence(info.referenceNumber, 'text'),
-    registrationNumber:  getFieldConfidence(info.registrationNumber, 'regnum'),
-    signatureSealPresent:getFieldConfidence(info.signatureSealPresent, 'text'),
-    doctorQualifications:getFieldConfidence(info.doctorQualifications, 'text'),
+    doctorName:           getFieldConfidence(info.doctorName, 'name'),
+    hospitalName:         getFieldConfidence(info.hospitalName, 'name'),
+    patientName:          getFieldConfidence(info.patientName, 'name'),
+    diagnosis:            getFieldConfidence(info.diagnosis, 'text'),
+    issueDate:            getFieldConfidence(info.issueDate, 'date'),
+    leaveFrom:            getFieldConfidence(info.leaveFrom, 'date'),
+    leaveTo:              getFieldConfidence(info.leaveTo, 'date'),
+    phone:                getFieldConfidence(info.phone, 'phone'),
+    referenceNumber:      getFieldConfidence(info.referenceNumber, 'text'),
+    registrationNumber:   getFieldConfidence(info.registrationNumber, 'regnum'),
+    signatureSealPresent: getFieldConfidence(info.signatureSealPresent, 'text'),
+    doctorQualifications: getFieldConfidence(info.doctorQualifications, 'text'),
   };
 }
 
@@ -131,9 +135,8 @@ function buildConfidenceMap(info) {
 function checkDoctorRegistration(info) {
   const reg = (info.registrationNumber || '').trim();
   const hasReg = reg.length >= 4 && reg !== 'Not found';
-  // PRC format: 7 digits, or license numbers like 0086417
-  const isPRC = /^\\d{5,10}$/.test(reg);
-  const isIndianMCI = /^[A-Z]{2}\\d{5,8}$/.test(reg);
+  const isPRC = /^\d{5,10}$/.test(reg);
+  const isIndianMCI = /^[A-Z]{2}\d{5,8}$/.test(reg);
   const formatNote = isPRC ? ' (PRC format)' : isIndianMCI ? ' (MCI format)' : '';
   return {
     id: 'doctor_registration',
@@ -146,9 +149,8 @@ function checkDoctorRegistration(info) {
 }
 
 function checkIssueDateValidity(info) {
-  // Only year present = unfilled template
   const raw = (info.issueDate || '').trim();
-  if (/^\\d{4}$/.test(raw)) {
+  if (/^\d{4}$/.test(raw)) {
     return {
       id: 'issue_date_validity',
       name: 'Issue Date Validity',
@@ -170,7 +172,7 @@ function checkIssueDateValidity(info) {
 
 function checkWeekendHoliday(info) {
   const raw = (info.issueDate || '').trim();
-  if (/^\\d{4}$/.test(raw) || !raw) {
+  if (/^\d{4}$/.test(raw) || !raw) {
     return {
       id: 'weekend_holiday',
       name: 'Weekend/Holiday Issue',
@@ -179,12 +181,17 @@ function checkWeekendHoliday(info) {
     };
   }
   const date = parseDate(raw);
-  if (!date) return { id: 'weekend_holiday', name: 'Weekend/Holiday Issue', passed: false, description: 'Could not parse issue date.' };
+  if (!date) return {
+    id: 'weekend_holiday',
+    name: 'Weekend/Holiday Issue',
+    passed: false,
+    description: 'Could not parse issue date.'
+  };
   const day = date.getDay();
   const isWeekend = day === 0 || day === 6;
   const mmdd = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const isHoliday = PUBLIC_HOLIDAYS.includes(mmdd);
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const passed = !isWeekend && !isHoliday;
   return {
     id: 'weekend_holiday',
@@ -198,11 +205,14 @@ function checkWeekendHoliday(info) {
 
 function checkRequiredFields(info) {
   const required = ['doctorName', 'hospitalName', 'patientName', 'diagnosis', 'issueDate'];
-  // Distinguish: field truly missing vs intentionally blank in template
-  const missing = required.filter(f => !info[f] || info[f] === 'Not found' || info[f].trim() === '');
+  const missing = required.filter(f =>
+    !info[f] || info[f] === 'Not found' || info[f].trim() === ''
+  );
   const passed = missing.length === 0;
   const { isBlankTemplate } = detectBlankTemplate(info);
-  const note = isBlankTemplate ? ' (This appears to be an unfilled template — not a completed certificate.)' : '';
+  const note = isBlankTemplate
+    ? ' (This appears to be an unfilled template — not a completed certificate.)'
+    : '';
   return {
     id: 'required_fields',
     name: 'Required Fields Complete',
@@ -217,13 +227,22 @@ function checkDateLogic(info) {
   const issue = parseDate(info.issueDate);
   const from  = parseDate(info.leaveFrom);
   const to    = parseDate(info.leaveTo);
-  // Medical clearance certs have no leave dates — that's okay
   const isClearance = (info.diagnosis || '').toLowerCase().match(/clearance|fit to|normal|essentially normal/);
   if (!from && !to && isClearance) {
-    return { id: 'date_logic', name: 'Date Logic Valid', passed: true, description: 'Medical clearance certificate — leave dates not required.' };
+    return {
+      id: 'date_logic',
+      name: 'Date Logic Valid',
+      passed: true,
+      description: 'Medical clearance certificate — leave dates not required.'
+    };
   }
   if (!issue || !from || !to) {
-    return { id: 'date_logic', name: 'Date Logic Valid', passed: false, description: 'Could not parse all dates for logic check.' };
+    return {
+      id: 'date_logic',
+      name: 'Date Logic Valid',
+      passed: false,
+      description: 'Could not parse all dates for logic check.'
+    };
   }
   const issueBeforeOrOnLeave = issue <= from;
   const fromBeforeTo = from <= to;
@@ -245,9 +264,21 @@ function checkLeaveDuration(info) {
   const to   = parseDate(info.leaveTo);
   const isClearance = (info.diagnosis || '').toLowerCase().match(/clearance|fit to|normal|essentially normal/);
   if (!from && !to && isClearance) {
-    return { id: 'leave_duration', name: 'Leave Duration Reasonable', passed: true, description: 'Medical clearance certificate — no leave dates required.' };
+    return {
+      id: 'leave_duration',
+      name: 'Leave Duration Reasonable',
+      passed: true,
+      description: 'Medical clearance certificate — no leave dates required.'
+    };
   }
-  if (!from || !to) return { id: 'leave_duration', name: 'Leave Duration Reasonable', passed: false, description: 'Cannot calculate leave duration — dates missing.' };
+  if (!from || !to) {
+    return {
+      id: 'leave_duration',
+      name: 'Leave Duration Reasonable',
+      passed: false,
+      description: 'Cannot calculate leave duration — dates missing.'
+    };
+  }
   const days = daysBetween(from, to) + 1;
   const diagLower = (info.diagnosis || '').toLowerCase();
   let range = DIAGNOSIS_DURATION['default'];
@@ -268,7 +299,12 @@ function checkLeaveDuration(info) {
 function checkMedicalTerminology(info) {
   const diag = (info.diagnosis || '').toLowerCase();
   if (!diag || diag.trim() === '') {
-    return { id: 'medical_terminology', name: 'Medical Terminology Valid', passed: false, description: 'No diagnosis found on the certificate.' };
+    return {
+      id: 'medical_terminology',
+      name: 'Medical Terminology Valid',
+      passed: false,
+      description: 'No diagnosis found on the certificate.'
+    };
   }
   const valid = VALID_MEDICAL_TERMS.some(term => diag.includes(term));
   return {
@@ -284,9 +320,10 @@ function checkMedicalTerminology(info) {
 function checkHospitalName(info) {
   const name    = (info.hospitalName || '').toLowerCase().trim();
   const address = (info.address || '').toLowerCase();
-  const isDeped = (info.hospitalName || '').toLowerCase().includes('deped') ||
-                  (info.address || '').toLowerCase().includes('deped') ||
-                  (info.doctorQualifications || '').toLowerCase().includes('division medical officer');
+  const isDeped =
+    (info.hospitalName || '').toLowerCase().includes('deped') ||
+    (info.address || '').toLowerCase().includes('deped') ||
+    (info.doctorQualifications || '').toLowerCase().includes('division medical officer');
   if (isDeped) {
     return {
       id: 'hospital_legitimate',
@@ -313,11 +350,15 @@ function checkHospitalName(info) {
 }
 
 function checkPhoneFormat(info) {
-  const phone = (info.phone || '').replace(/\\s/g, '');
-  const philippineRegex = /^(\\+63|0)?[\\d\\s\\-().]{7,15}$/;
-  const indianRegex = /^(\\+91)?[6-9]\\d{9}$/;
-  const genericRegex = /^\\+?[\\d\\s\\-().]{7,15}$/;
-  const passed = phone.length > 0 && (philippineRegex.test(phone) || indianRegex.test(phone) || genericRegex.test(phone));
+  const phone = (info.phone || '').replace(/\s/g, '');
+  const philippineRegex = /^(\+63|0)?[\d\s\-(). ]{7,15}$/;
+  const indianRegex     = /^(\+91)?[6-9]\d{9}$/;
+  const genericRegex    = /^\+?[\d\s\-(). ]{7,15}$/;
+  const passed = phone.length > 0 && (
+    philippineRegex.test(phone) ||
+    indianRegex.test(phone) ||
+    genericRegex.test(phone)
+  );
   return {
     id: 'phone_format',
     name: 'Phone Format Valid',
@@ -355,21 +396,30 @@ function checkSignatureSeal(info) {
 }
 
 function checkDiagnosisDuration(info) {
-  const from  = parseDate(info.leaveFrom);
-  const to    = parseDate(info.leaveTo);
-  const diag  = (info.diagnosis || '').toLowerCase();
+  const from = parseDate(info.leaveFrom);
+  const to   = parseDate(info.leaveTo);
+  const diag = (info.diagnosis || '').toLowerCase();
   const isClearance = diag.match(/clearance|fit to|normal|essentially normal/);
   if (isClearance && !from && !to) {
-    return { id: 'diagnosis_duration', name: 'Diagnosis Matches Duration', passed: true, description: 'Medical clearance — no leave duration expected.' };
+    return {
+      id: 'diagnosis_duration',
+      name: 'Diagnosis Matches Duration',
+      passed: true,
+      description: 'Medical clearance — no leave duration expected.'
+    };
   }
   if (!from || !to || !diag) {
-    return { id: 'diagnosis_duration', name: 'Diagnosis Matches Duration', passed: false, description: 'Insufficient data to validate diagnosis vs duration.' };
+    return {
+      id: 'diagnosis_duration',
+      name: 'Diagnosis Matches Duration',
+      passed: false,
+      description: 'Insufficient data to validate diagnosis vs duration.'
+    };
   }
   const days = daysBetween(from, to) + 1;
   let range = DIAGNOSIS_DURATION['default'];
-  let matchedDiag = 'condition';
   for (const [key, val] of Object.entries(DIAGNOSIS_DURATION)) {
-    if (diag.includes(key)) { range = val; matchedDiag = key; break; }
+    if (diag.includes(key)) { range = val; break; }
   }
   const passed = days >= range[0] && days <= range[1];
   return {
@@ -387,8 +437,8 @@ function checkDiagnosisDuration(info) {
 // ============================================
 function runAllRules(extractedInfo) {
   const info = extractedInfo || {};
-  const templateCheck = detectBlankTemplate(info);
-  const confidenceMap = buildConfidenceMap(info);
+  const templateCheck  = detectBlankTemplate(info);
+  const confidenceMap  = buildConfidenceMap(info);
 
   const checks = [
     checkDoctorRegistration(info),
