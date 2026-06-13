@@ -14,15 +14,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'medverify_secret_key_2024';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
-app.use(cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
 
-// ✅ FIXED PATH - serve frontend build
-if (NODE_ENV === 'production') {
-  const frontendBuild = path.join(__dirname, '..', '..', 'frontend', 'build');
-  app.use(express.static(frontendBuild));
-  console.log('Serving frontend from:', frontendBuild);
-}
+// Serve frontend FIRST before API routes
+const frontendBuild = path.join(__dirname, '..', '..', 'frontend', 'build');
+app.use(express.static(frontendBuild));
+console.log('Serving frontend from:', frontendBuild);
 
 const users = [
   { id: '1', username: 'admin', password: bcrypt.hashSync('admin123', 10), role: 'Administrator', level: 'Admin • System' },
@@ -52,6 +50,7 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
+// API ROUTES
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
   const user = users.find(u => u.username === username);
@@ -112,8 +111,7 @@ Respond ONLY with valid JSON (no markdown backticks) in this exact structure:
   "riskLevel": "LOW_RISK",
   "verdict": "Brief verdict"
 }
-
-Check for: template design (Canva), grammatical errors, logical contradictions, role conflicts, suspicious digital signatures, address mismatches. riskLevel must be HIGH_RISK/MEDIUM_RISK/LOW_RISK exactly.`;
+riskLevel must be HIGH_RISK/MEDIUM_RISK/LOW_RISK exactly.`;
 
     const result = await model.generateContent([{ inlineData: { mimeType, data: imageData } }, prompt]);
     const responseText = result.response.text();
@@ -139,12 +137,10 @@ Check for: template design (Canva), grammatical errors, logical contradictions, 
 app.get('/api/audit', authMiddleware, (req, res) => res.json(auditLog));
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '2.0', geminiConfigured: !!GEMINI_API_KEY }));
 
-// ✅ FIXED PATH - catch all routes for React
-if (NODE_ENV === 'production') {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '..', '..', 'frontend', 'build', 'index.html'));
-  });
-}
+// Catch all - serve React for any non-API route
+app.get('*', (req, res) => {
+  res.sendFile(path.join(frontendBuild, 'index.html'));
+});
 
 app.listen(PORT, () => {
   console.log(`✅ MedVerify running on port ${PORT}`);
