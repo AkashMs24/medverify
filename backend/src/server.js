@@ -64,7 +64,7 @@ async function extractWithGemini(fileBuffer, mimeType) {
   if (!GEMINI_API_KEY) return null;
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `Extract all fields from this medical certificate. Respond ONLY with valid JSON, no markdown:
 {
   "doctorName": "",
@@ -99,7 +99,7 @@ async function getAiObservations(extractedInfo, fileBuffer, mimeType) {
   if (!GEMINI_API_KEY) return null;
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     const prompt = `You are a medical certificate fraud expert. Given this extracted info:
 ${JSON.stringify(extractedInfo, null, 2)}
 
