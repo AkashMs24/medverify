@@ -97,7 +97,9 @@ medverify/
 │       └── components/ # Layout/Navbar
 ├── backend/           # Express API
 │   └── src/
-│       └── server.js  # All API routes + Gemini integration
+│       └── server.js
+             rule.js
+  # All API routes + Gemini integration
 ├── render.yaml        # Render deployment config
 └── railway.toml       # Railway deployment config
 ```
