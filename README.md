@@ -5,7 +5,7 @@
 **🔗 Live Demo → [medverify-nws7.onrender.com](https://medverify-nws7.onrender.com/)**
 
 ![MedVerify](https://img.shields.io/badge/MedVerify-v2.0-00d084)
-![Gemini](https://img.shields.io/badge/AI-Gemini%201.5%20Flash-blue)
+![Gemini](https://img.shields.io/badge/AI-Gemini%202.5%20Flash-blue)
 ![React](https://img.shields.io/badge/Frontend-React%2018-61dafb)
 ![Node](https://img.shields.io/badge/Backend-Node.js%2018-green)
 
