@@ -17,8 +17,11 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// ✅ FIXED PATH - serve frontend build
 if (NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../../public')));
+  const frontendBuild = path.join(__dirname, '..', '..', 'frontend', 'build');
+  app.use(express.static(frontendBuild));
+  console.log('Serving frontend from:', frontendBuild);
 }
 
 const users = [
@@ -55,7 +58,11 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user || !bcrypt.compareSync(password, user.password)) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
-  const token = jwt.sign({ id: user.id, username: user.username, role: user.role, level: user.level }, JWT_SECRET, { expiresIn: '24h' });
+  const token = jwt.sign(
+    { id: user.id, username: user.username, role: user.role, level: user.level },
+    JWT_SECRET,
+    { expiresIn: '24h' }
+  );
   res.json({ token, user: { id: user.id, username: user.username, role: user.role, level: user.level } });
 });
 
@@ -94,7 +101,7 @@ Respond ONLY with valid JSON (no markdown backticks) in this exact structure:
     {"id":"date_logic","name":"Date Logic Valid","passed":true,"description":""},
     {"id":"leave_duration","name":"Leave Duration Reasonable","passed":true,"description":""},
     {"id":"medical_terminology","name":"Medical Terminology Valid","passed":true,"description":""},
-    {"id":"hospital_legitimate","name":"Hospital Name Legitimate","passed":true,"description":"Check address vs hospital name"},
+    {"id":"hospital_legitimate","name":"Hospital Name Legitimate","passed":true,"description":""},
     {"id":"phone_format","name":"Phone Format Valid","passed":true,"description":""},
     {"id":"reference_number","name":"Reference Number Present","passed":true,"description":""},
     {"id":"signature_seal","name":"Signature/Seal Present","passed":true,"description":""},
@@ -106,12 +113,12 @@ Respond ONLY with valid JSON (no markdown backticks) in this exact structure:
   "verdict": "Brief verdict"
 }
 
-Check for: template design (Canva), grammatical errors, logical contradictions, role conflicts (patient=doctor), suspicious digital signatures, address mismatches. riskLevel must be HIGH_RISK/MEDIUM_RISK/LOW_RISK. Score 0=fraud, 100=authentic.`;
+Check for: template design (Canva), grammatical errors, logical contradictions, role conflicts, suspicious digital signatures, address mismatches. riskLevel must be HIGH_RISK/MEDIUM_RISK/LOW_RISK exactly.`;
 
     const result = await model.generateContent([{ inlineData: { mimeType, data: imageData } }, prompt]);
     const responseText = result.response.text();
     const cleanJson = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
+
     let analysisResult;
     try { analysisResult = JSON.parse(cleanJson); }
     catch { const m = responseText.match(/\{[\s\S]*\}/); if (m) analysisResult = JSON.parse(m[0]); else throw new Error('Parse failed'); }
@@ -132,13 +139,17 @@ Check for: template design (Canva), grammatical errors, logical contradictions, 
 app.get('/api/audit', authMiddleware, (req, res) => res.json(auditLog));
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '2.0', geminiConfigured: !!GEMINI_API_KEY }));
 
+// ✅ FIXED PATH - catch all routes for React
 if (NODE_ENV === 'production') {
-  app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../../public/index.html')));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '..', '..', 'frontend', 'build', 'index.html'));
+  });
 }
 
 app.listen(PORT, () => {
   console.log(`✅ MedVerify running on port ${PORT}`);
   console.log(`🤖 Gemini: ${GEMINI_API_KEY ? 'Configured ✓' : 'NOT set → demo mode'}`);
+  console.log(`🌍 Mode: ${NODE_ENV}`);
 });
 
 function getMockAnalysis(analysisId, filename, fileSize) {
@@ -160,11 +171,11 @@ function getMockAnalysis(analysisId, filename, fileSize) {
       { id: "diagnosis_duration", name: "Diagnosis Matches Duration", passed: true, description: "Leave duration appropriate for diagnosis." }
     ],
     aiObservations: [
-      "DEMO MODE: Add GEMINI_API_KEY to backend/.env for real AI analysis.",
-      "Real analysis detects template design (Canva/generic), grammatical errors, and logical conflicts.",
+      "DEMO MODE: Add GEMINI_API_KEY to environment variables for real AI analysis.",
+      "Real analysis detects template design, grammatical errors, and logical conflicts.",
       "Hospital address is cross-referenced against the hospital name in public records.",
       "Signature analysis detects digitally overlaid or cloned stamp artifacts.",
-      "Role conflict detection flags cases where patient name appears as the doctor/signatory."
+      "Role conflict detection flags cases where patient name appears as the doctor."
     ],
     authenticityScore: 72, riskLevel: "MEDIUM_RISK",
     verdict: "Demo mode — configure GEMINI_API_KEY for real fraud detection.",
