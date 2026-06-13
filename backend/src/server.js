@@ -78,7 +78,7 @@ app.post('/api/analyze', authMiddleware, upload.single('certificate'), async (re
     }
 
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
     const imageData = req.file.buffer.toString('base64');
     const mimeType = req.file.mimetype;
 
