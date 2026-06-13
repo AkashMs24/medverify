@@ -1,0 +1,15 @@
+{
+  "name": "medverify",
+  "version": "2.0.0",
+  "description": "MedVerify - Medical Certificate Authenticator (Ideathon Winner)",
+  "scripts": {
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm start",
+    "build:frontend": "cd frontend && npm run build",
+    "start": "cd backend && npm start"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

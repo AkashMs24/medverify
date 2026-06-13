@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+buildCommand = "cd frontend && npm install && npm run build && cd ../backend && npm install"
+
+[deploy]
+startCommand = "NODE_ENV=production node backend/src/server.js"
+healthcheckPath = "/api/health"

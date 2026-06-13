@@ -1,0 +1,122 @@
+.audit-container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.audit-header {
+  margin-bottom: 24px;
+}
+
+.audit-header h2 {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.audit-header p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.audit-count {
+  display: inline-block;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+.audit-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  padding: 40px;
+  justify-content: center;
+}
+
+.audit-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.audit-empty h3 {
+  font-size: 16px;
+  color: var(--text-secondary);
+}
+
+.audit-empty p {
+  font-size: 14px;
+  max-width: 300px;
+}
+
+.audit-table-wrap {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.audit-table thead tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.audit-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.audit-table td {
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.audit-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.audit-table tbody tr:hover td {
+  background: var(--bg-tertiary);
+}
+
+.td-time { color: var(--text-muted); white-space: nowrap; font-size: 12px; }
+.td-file { color: var(--text-primary); font-weight: 500; }
+.td-user { color: var(--accent-green); }
+.td-score { font-weight: 700; color: var(--text-primary); }
+.td-pass { color: var(--accent-green); font-weight: 600; }
+.td-fail { color: var(--accent-red); font-weight: 600; }
+
+.risk-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border: 1px solid;
+}
