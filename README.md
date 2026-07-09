@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/Frontend-React%2018-61dafb)
 ![Node](https://img.shields.io/badge/Backend-Node.js%2018-green)
 
-> 🏆 **Ideathon 2nd Prize Winner** — AI-powered medical certificate fraud detection
+> 🏆 **Ideathon 3rd Prize Winner** — AI-powered medical certificate fraud detection
 
 </div>
 
