@@ -26,9 +26,9 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// ✅ CORRECT MODEL NAMES
-const GEMINI_MODEL = 'gemini-1.5-flash';  // This works with @google/generative-ai
-const GROQ_VISION_MODEL = 'llama-3.2-11b-vision-preview';  // This is the working Groq vision model
+// Using the CORRECT model names
+const GEMINI_MODEL = 'gemini-1.5-flash';
+const GROQ_VISION_MODEL = 'llama-3.2-11b-vision-preview';
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
@@ -216,64 +216,83 @@ function readFileToBuffer(filePath) {
   }
 }
 
+// ─── IMPROVED MANUAL EXTRACTION ──────────────────────────────────────────────
 function manualExtractFromText(text) {
   const extracted = {};
   
-  let doctorMatch = text.match(/(?:Dr\.|Doctor)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (doctorMatch) extracted.doctorName = doctorMatch[1].trim();
+  // Extract Doctor Name - multiple patterns
+  const doctorPatterns = [
+    /(?:Dr\.|Doctor)\s+([A-Za-z]+\s+[A-Za-z]+)/i,
+    /I,\s*Dr\.\s*([A-Za-z]+\s+[A-Za-z]+)/i,
+    /SIGNATURE OF MEDICAL OFFICER\s+([A-Za-z]+\s+[A-Za-z]+)/i,
+    /^Dr\.\s+([A-Za-z]+\s+[A-Za-z]+)/im
+  ];
+  for (const pattern of doctorPatterns) {
+    const match = text.match(pattern);
+    if (match && !extracted.doctorName) {
+      extracted.doctorName = match[1].trim();
+    }
+  }
   
-  let doctorMatch2 = text.match(/I,\s*Dr\.\s*([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (doctorMatch2 && !extracted.doctorName) extracted.doctorName = doctorMatch2[1].trim();
-  
-  let doctorMatch3 = text.match(/SIGNATURE OF MEDICAL OFFICER\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (doctorMatch3 && !extracted.doctorName) extracted.doctorName = doctorMatch3[1].trim();
-  
+  // Extract Registration Number
   const regMatch = text.match(/(?:Reg\.\s*No\.|Registration\s*No\.)\s*[:.]?\s*([A-Z0-9\-]+)/i);
   if (regMatch) extracted.registrationNumber = regMatch[1].trim();
   
-  let patientMatch = text.match(/(?:patient|Mr\.|Ms\.|Mrs\.)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (patientMatch) extracted.patientName = patientMatch[1].trim();
+  // Extract Patient Name - multiple patterns
+  const patientPatterns = [
+    /(?:patient|Mr\.|Ms\.|Mrs\.)\s+([A-Za-z]+\s+[A-Za-z]+)/i,
+    /certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i,
+    /hereby certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i,
+    /whose signature is given above\s+([A-Za-z]+\s+[A-Za-z]+)/i
+  ];
+  for (const pattern of patientPatterns) {
+    const match = text.match(pattern);
+    if (match && !extracted.patientName) {
+      extracted.patientName = match[1].trim();
+    }
+  }
   
-  let patientMatch2 = text.match(/certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (patientMatch2 && !extracted.patientName) extracted.patientName = patientMatch2[1].trim();
+  // Extract Diagnosis - multiple patterns
+  const diagnosisPatterns = [
+    /(?:suffering from|diagnosis|diagnosed with)\s+([A-Za-z\s,]+?)(?:,|\.|and|for|\(|the following)/i,
+    /is suffering from\s+([A-Za-z\s,]+?)(?:,|\.|and)/i,
+    /advised:\s*([A-Za-z\s,]+?)(?:\d|\,|\.)/i
+  ];
+  for (const pattern of diagnosisPatterns) {
+    const match = text.match(pattern);
+    if (match && !extracted.diagnosis) {
+      extracted.diagnosis = match[1].trim();
+    }
+  }
   
-  let patientMatch3 = text.match(/hereby certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-  if (patientMatch3 && !extracted.patientName) extracted.patientName = patientMatch3[1].trim();
-  
-  let diagMatch = text.match(/(?:suffering from|diagnosis|diagnosed with)\s+([A-Za-z\s,]+?)(?:,|\.|and|for|\(|the following)/i);
-  if (diagMatch) extracted.diagnosis = diagMatch[1].trim();
-  
-  let diagMatch2 = text.match(/is suffering from\s+([A-Za-z\s,]+?)(?:,|\.|and)/i);
-  if (diagMatch2 && !extracted.diagnosis) extracted.diagnosis = diagMatch2[1].trim();
-  
-  let dateMatch = text.match(/(?:Date|Dated)\s*[:.]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+  // Extract Date
+  const dateMatch = text.match(/(?:Date|Dated)\s*[:.]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
   if (dateMatch) extracted.issueDate = dateMatch[1].trim();
   
-  let hospitalMatch = text.match(/([A-Za-z]+\s+(?:Hospital|Clinic|Medical Center|Health Center|Family Clinic))/i);
+  // Extract Hospital/Clinic
+  const hospitalMatch = text.match(/([A-Za-z]+\s+(?:Hospital|Clinic|Medical Center|Health Center|Family Clinic))/i);
   if (hospitalMatch) extracted.hospitalName = hospitalMatch[1].trim();
   
-  let qualMatch = text.match(/(M\.B\.B\.S\.|M\.D\.|B\.H\.M\.S\.|B\.A\.M\.S\.|B\.D\.S\.|D\.M\.D\.|M\.S\.|D\.N\.B\.)/g);
+  // Extract Qualifications
+  const qualMatch = text.match(/(M\.B\.B\.S\.|M\.D\.|B\.H\.M\.S\.|B\.A\.M\.S\.|B\.D\.S\.|D\.M\.D\.|M\.S\.|D\.N\.B\.)/g);
   if (qualMatch) {
     const uniqueQuals = [...new Set(qualMatch)];
     extracted.doctorQualifications = uniqueQuals.join(', ');
   }
   
-  let leaveMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*to\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+  // Extract leave dates
+  const leaveMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*to\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
   if (leaveMatch) {
     extracted.leaveFrom = leaveMatch[1].trim();
     extracted.leaveTo = leaveMatch[2].trim();
   }
   
-  let leaveMatch2 = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*–\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
-  if (leaveMatch2 && !extracted.leaveFrom) {
-    extracted.leaveFrom = leaveMatch2[1].trim();
-    extracted.leaveTo = leaveMatch2[2].trim();
-  }
-  
+  // Extract signature presence
   if (text.match(/signature|Signature|SIGNATURE|seal|Seal|SEAL/)) {
     extracted.signatureSealPresent = 'Yes';
   }
   
+  // Determine if filled
   if (extracted.patientName || extracted.doctorName || extracted.diagnosis) {
     extracted.isFilledTemplate = 'Yes';
   } else {
@@ -283,7 +302,7 @@ function manualExtractFromText(text) {
   return extracted;
 }
 
-// ✅ FIXED: GEMINI CALL
+// ─── GEMINI CALL ──────────────────────────────────────────────────────────
 async function callGemini(filePath, mimeType, submissionType, extractedText = '') {
   if (!genAI) throw new Error('Gemini not configured');
 
@@ -291,40 +310,38 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
     const fileBuffer = readFileToBuffer(filePath);
     if (!fileBuffer) throw new Error('Could not read file');
 
+    // Try with the model name as is
     const model = genAI.getGenerativeModel({
       model: GEMINI_MODEL,
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 2048,
-      }
     });
 
     const base64Data = fileBuffer.toString('base64');
     const prompt = buildCombinedPrompt(submissionType, extractedText);
 
-    let result;
+    // For PDFs with extracted text, use text-only
     if (mimeType === 'application/pdf' && extractedText) {
       const textPrompt = `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`;
-      result = await model.generateContent(textPrompt);
-    } else {
-      result = await model.generateContent([
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: base64Data
-          }
-        },
-        { text: prompt }
-      ]);
+      const result = await model.generateContent(textPrompt);
+      const response = result.response;
+      const text = response.text();
+      if (!text) throw new Error('Empty response');
+      return parseCombinedJson(text);
     }
+
+    // For images, use vision
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: mimeType,
+          data: base64Data
+        }
+      },
+      { text: prompt }
+    ]);
 
     const response = result.response;
     const text = response.text();
-
-    if (!text || text.trim() === '') {
-      throw new Error('Empty response from Gemini');
-    }
-
+    if (!text) throw new Error('Empty response');
     return parseCombinedJson(text);
 
   } catch (error) {
@@ -333,7 +350,7 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
   }
 }
 
-// ✅ FIXED: GROQ CALL
+// ─── GROQ CALL ──────────────────────────────────────────────────────────
 async function callGroq(filePath, mimeType, submissionType, extractedText = '') {
   if (!GROQ_API_KEY) throw new Error('Groq not configured');
   
@@ -345,11 +362,13 @@ async function callGroq(filePath, mimeType, submissionType, extractedText = '') 
 
   let messages;
   if (mimeType === 'application/pdf' && extractedText) {
+    // Text-only mode for PDFs
     messages = [{
       role: 'user',
       content: `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`
     }];
   } else {
+    // Vision mode for images
     messages = [{
       role: 'user',
       content: [
@@ -359,34 +378,73 @@ async function callGroq(filePath, mimeType, submissionType, extractedText = '') 
     }];
   }
 
-  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${GROQ_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: GROQ_VISION_MODEL,
-      messages: messages,
-      temperature: 0.1,
-      max_completion_tokens: 2048,
-      response_format: { type: 'json_object' }
-    })
-  });
+  // Try with the vision model
+  try {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: GROQ_VISION_MODEL,
+        messages: messages,
+        temperature: 0.1,
+        max_completion_tokens: 2048,
+        response_format: { type: 'json_object' }
+      })
+    });
 
-  if (!resp.ok) {
-    const errBody = await resp.text().catch(() => '');
-    throw new Error(`Groq API error ${resp.status}: ${errBody.slice(0, 300)}`);
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => '');
+      throw new Error(`Groq API error ${resp.status}: ${errBody.slice(0, 300)}`);
+    }
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    return parseCombinedJson(text);
+  } catch (error) {
+    // If vision model fails, try with text-only model if we have extracted text
+    if (extractedText) {
+      console.log('🔄 Vision model failed, trying text-only model...');
+      const textMessages = [{
+        role: 'user',
+        content: `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`
+      }];
+      
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-70b-versatile', // Text-only model fallback
+          messages: textMessages,
+          temperature: 0.1,
+          max_completion_tokens: 2048,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        throw new Error(`Groq text API error ${resp.status}: ${errBody.slice(0, 300)}`);
+      }
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content || '';
+      return parseCombinedJson(text);
+    }
+    throw error;
   }
-  const data = await resp.json();
-  const text = data.choices?.[0]?.message?.content || '';
-  return parseCombinedJson(text);
 }
 
+// ─── AI ORCHESTRATOR ────────────────────────────────────────────────────
 async function analyzeWithAI(filePath, mimeType, submissionType, extractedText = '') {
   const providers = [];
 
+  // Try Groq first (if available)
   if (GROQ_API_KEY) providers.push({ name: 'groq', fn: callGroq });
+  // Try Gemini second
   if (GEMINI_API_KEY) providers.push({ name: 'gemini', fn: callGemini });
 
   for (const provider of providers) {
@@ -411,15 +469,17 @@ async function analyzeWithAI(filePath, mimeType, submissionType, extractedText =
     }
   }
 
-  console.log('❌ All AI providers failed');
+  console.log('❌ All AI providers failed - using fallback manual extraction');
   return null;
 }
 
+// ─── CORE ANALYSIS FUNCTION ──────────────────────────────────────────────────
 async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize, username) {
   const analysisId = uuidv4();
   const startTime = Date.now();
   const submissionType = detectSubmissionType(null, mimeType, originalname);
 
+  // Extract text from PDF
   let extractedText = '';
   if (mimeType === 'application/pdf' && pdfParse) {
     try {
@@ -430,24 +490,42 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
     }
   }
 
-  const aiResult = await analyzeWithAI(filePath, mimeType, submissionType, extractedText);
-  const aiAvailable = aiResult !== null;
+  // Try AI analysis
+  let aiResult = null;
+  let aiAvailable = false;
+  
+  // Only try AI if we have API keys
+  if (GEMINI_API_KEY || GROQ_API_KEY) {
+    aiResult = await analyzeWithAI(filePath, mimeType, submissionType, extractedText);
+    aiAvailable = aiResult !== null;
+  }
 
-  let extractedInfo = aiResult?.extractedInfo || {
+  // Build extracted info from AI or fallback to manual
+  let extractedInfo = aiResult?.extractedInfo || {};
+
+  // If AI failed or incomplete, use manual parsing as FALLBACK
+  const hasValidData = extractedInfo.doctorName || extractedInfo.patientName || 
+                       extractedInfo.issueDate || extractedInfo.diagnosis;
+
+  if ((!aiAvailable || !hasValidData) && extractedText) {
+    console.log('⚠️ AI failed or incomplete, using fallback manual extraction...');
+    const manualExtracted = manualExtractFromText(extractedText);
+    // Merge - manual extraction is the fallback
+    extractedInfo = { ...manualExtracted, ...extractedInfo };
+    console.log('📊 Manual Extraction (Fallback):', manualExtracted);
+  }
+
+  // Ensure all fields exist
+  const defaultInfo = {
     doctorName: '', hospitalName: '', patientName: '', diagnosis: '',
     issueDate: '', leaveFrom: '', leaveTo: '', phone: '',
     referenceNumber: '', signatureSealPresent: 'No',
     address: '', doctorQualifications: '', registrationNumber: '',
     isFilledTemplate: 'No', documentType: 'unknown'
   };
+  extractedInfo = { ...defaultInfo, ...extractedInfo };
 
-  if ((!aiAvailable || !extractedInfo.doctorName) && extractedText) {
-    console.log('⚠️ AI failed or incomplete, attempting manual text parsing...');
-    const manualExtracted = manualExtractFromText(extractedText);
-    extractedInfo = { ...manualExtracted, ...extractedInfo };
-    console.log('📊 Manual Extraction:', manualExtracted);
-  }
-
+  // Check if document has data
   const hasData = extractedInfo.doctorName || extractedInfo.patientName || 
                   extractedInfo.issueDate || extractedInfo.diagnosis || 
                   extractedInfo.registrationNumber;
@@ -457,8 +535,7 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
   }
 
   const { isBlankTemplate, blankCoreFields, blankRatio } = detectBlankTemplate(extractedInfo);
-  const isExplicitlyUnfilled = extractedInfo.isFilledTemplate === 'No';
-  const actuallyBlank = (isBlankTemplate || isExplicitlyUnfilled) && !hasData;
+  const actuallyBlank = !hasData && (isBlankTemplate || extractedInfo.isFilledTemplate === 'No');
 
   if (actuallyBlank) {
     const result = {
@@ -469,54 +546,56 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
       fileSize,
       submissionType,
       isBlankTemplate: true,
-      templateWarning: `This is an unfilled official template — ${blankRatio}% of fields are empty.`,
+      templateWarning: 'This appears to be a blank template. Please upload a completed certificate.',
       ocrAvailable: false,
       aiAvailable: false,
-      aiProvider: aiResult?.provider || null,
+      aiProvider: null,
       extractedInfo,
       validationChecks: [],
       aiObservations: [
-        'This document is an official blank template — it has not been filled out.',
-        `${blankCoreFields.length} core fields are empty: ${blankCoreFields.join(', ')}.`,
-        'A blank template cannot be fraudulent or authentic — it is simply incomplete.',
-        'Please upload a completed certificate with patient details filled in.',
-        'Score set to N/A as authenticity cannot be assessed on an empty template.'
+        'This document appears to be a blank template.',
+        'No patient or doctor information found.',
+        'Please upload a completed certificate.',
+        'Authenticity cannot be assessed on an empty template.',
+        'Score set to N/A.'
       ],
       authenticityScore: null,
       riskLevel: 'TEMPLATE_DETECTED',
-      verdict: 'This is a blank unfilled template — authenticity cannot be assessed.',
+      verdict: 'Blank template detected. Please upload a completed certificate.',
       passedCount: 0,
       failedCount: 0,
       confidenceMap: {},
       prcVerification: null,
-      rawResponse: `TEMPLATE DETECTED: ${blankRatio}% fields blank`
+      rawResponse: 'TEMPLATE_DETECTED'
     };
+    
     auditLog.unshift({
       id: analysisId, timestamp: new Date().toISOString(),
       user: username, filename: originalname,
       score: 'N/A', riskLevel: 'TEMPLATE_DETECTED', passed: 0, failed: 0
     });
+    
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     return result;
   }
 
+  // Run rules
   const { checks, passed, failed, ruleScore, confidenceMap } = runAllRules(extractedInfo);
   const prcVerification = verifyPRCLicense(extractedInfo.registrationNumber, extractedInfo.doctorName);
 
-  let aiObservations = aiResult?.aiObservations || null;
-  if (!aiObservations) {
-    aiObservations = [
-      `AI analysis ${aiAvailable ? 'completed' : 'unavailable'} — ${aiAvailable ? 'Combined with' : 'Rule-based'} checks applied.`,
-      `${passed} of ${checks.length} rule checks passed based on extracted certificate data.`,
-      `${aiAvailable ? 'AI provider (' + aiResult.provider + ') analyzed the document.' : 'Add GEMINI_API_KEY and/or GROQ_API_KEY for AI analysis.'}`,
-      'The rule engine verified dates, phone format, leave duration, and field completeness.',
-      'Manual review recommended for final verification.'
-    ];
-  }
+  // Build AI observations
+  let aiObservations = aiResult?.aiObservations || [
+    `AI analysis ${aiAvailable ? 'completed' : 'unavailable'} - using rule-based checks.`,
+    `${passed} of ${checks.length} rule checks passed.`,
+    `${aiAvailable ? 'AI provider (' + aiResult.provider + ') analyzed the document.' : 'Manual extraction was used as fallback.'}`,
+    'Rule engine verified dates, phone format, leave duration, and field completeness.',
+    'Manual review recommended for final verification.'
+  ];
 
+  // Calculate score
   let authenticityScore;
   if (aiAvailable) {
-    const negativeWords = ['fraudulent', 'suspicious', 'conflict', 'error', 'fake', 'template', 'invalid', 'missing', 'generic', 'absent', 'blank', 'unclear', 'forged', 'fabricated'];
+    const negativeWords = ['fraudulent', 'suspicious', 'conflict', 'error', 'fake', 'invalid', 'missing', 'unclear', 'forged'];
     const negCount = aiObservations.join(' ').toLowerCase().split(/\s+/)
       .filter(w => negativeWords.some(n => w.includes(n))).length;
     const aiScore = Math.max(0, 100 - (negCount * 7));
@@ -536,7 +615,7 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
     `Likely fraudulent: ${failed} critical checks failed.` :
     riskLevel === 'MEDIUM_RISK' ?
     `Uncertain authenticity: ${failed} checks failed. Manual review recommended.` :
-    `Appears legitimate: ${passed}/${checks.length} checks passed with no major red flags.`;
+    `Appears legitimate: ${passed}/${checks.length} checks passed.`;
 
   auditLog.unshift({
     id: analysisId, timestamp: new Date().toISOString(),
@@ -554,9 +633,9 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
     fileSize,
     submissionType,
     isBlankTemplate: false,
-    ocrAvailable: aiAvailable || !!extractedText,
+    ocrAvailable: !!extractedText,
     aiAvailable,
-    aiProvider: aiResult?.provider || null,
+    aiProvider: aiResult?.provider || 'fallback',
     extractedInfo,
     validationChecks: checks,
     aiObservations,
@@ -567,9 +646,11 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
     failedCount: failed,
     confidenceMap,
     prcVerification,
-    rawResponse: `AI: ${aiAvailable ? `OK (${aiResult.provider})` : 'FAILED'} | Rules: ${passed}/${checks.length} | Type: ${submissionType} | Score: ${authenticityScore}`
+    rawResponse: `AI: ${aiAvailable ? `OK (${aiResult.provider})` : 'FALLBACK'} | Rules: ${passed}/${checks.length} | Score: ${authenticityScore}`
   };
 }
+
+// ─── ROUTES ─────────────────────────────────────────────────────────────
 
 app.post('/api/analyze', authMiddleware, upload.single('certificate'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -634,8 +715,8 @@ app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')))
 
 app.listen(PORT, () => {
   console.log(`✅ MedVerify v3.1 running on port ${PORT}`);
-  console.log(`🤖 Gemini: ${GEMINI_API_KEY ? `Configured ✓ (${GEMINI_MODEL})` : 'NOT set'}`);
-  console.log(`🤖 Groq: ${GROQ_API_KEY ? `Configured ✓ (${GROQ_VISION_MODEL})` : 'NOT set'}`);
+  console.log(`🤖 Gemini: ${GEMINI_API_KEY ? `Configured ✓` : 'NOT set'}`);
+  console.log(`🤖 Groq: ${GROQ_API_KEY ? `Configured ✓` : 'NOT set'}`);
   console.log(`📄 PDF Parse: ${pdfParse ? 'Available ✓' : 'Not available'}`);
-  console.log(`🚀 Features: Blank Template Detection | PRC Format Check | Batch Upload | Confidence Scores | AI Fallback | PDF Text Extraction`);
+  console.log(`🚀 Fallback: Manual extraction is always available if AI fails`);
 });
