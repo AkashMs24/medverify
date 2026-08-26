@@ -2,7 +2,7 @@ require('dotenv').config();
 const express  = require('express');
 const cors     = require('cors');
 const multer   = require('multer');
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');  // ← FIXED HERE
 const jwt      = require('jsonwebtoken');
 const bcrypt   = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
@@ -17,15 +17,12 @@ const NODE_ENV   = process.env.NODE_ENV || 'development';
 // ─── AI PROVIDER CONFIG ─────────────────────────────────────────────────────
 const GEMINI_API_KEY   = process.env.GEMINI_API_KEY || '';
 const GROQ_API_KEY     = process.env.GROQ_API_KEY || '';
-const GEMINI_MODEL     = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-// Groq's multimodal lineup changes often — override via env if this model gets retired.
-// Check https://console.groq.com/docs/vision for the current list.
-const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
-// Per-provider hard timeout. If a provider doesn't answer in time we fail over
-// instead of leaving the user staring at a spinner.
+const GEMINI_MODEL     = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '15000', 10);
 
-const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+// ← FIXED HERE - Correct initialization for @google/generative-ai
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
@@ -33,6 +30,7 @@ app.use(express.json({ limit: '50mb' }));
 const frontendBuild = path.join(__dirname, '..', '..', 'frontend', 'build');
 app.use(express.static(frontendBuild));
 
+// ─── USERS ─────────────────────────────────────────────────────────────────────
 const users = [
   { id: '1', username: 'admin',       password: bcrypt.hashSync('admin123',  10), role: 'Administrator', level: 'Admin • System'   },
   { id: '2', username: 'prof.sharma', password: bcrypt.hashSync('sharma123', 10), role: 'Professor',     level: 'Faculty • HR'     },
@@ -50,7 +48,6 @@ const upload = multer({
   }
 });
 
-// Batch upload: up to 10 files
 const uploadBatch = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -81,10 +78,7 @@ function detectSubmissionType(fileBuffer, mimeType, filename) {
   return 'unknown';
 }
 
-// ─── PRC LICENSE VERIFICATION (Philippines) ─────────────────────────────────
-// Checks format against PRC numbering rules.
-// For live verification connect to: https://www.prc.gov.ph/
-// (They don't have a public API — you'd need a scraper or official partnership)
+// ─── PRC LICENSE VERIFICATION ──────────────────────────────────────────────
 function verifyPRCLicense(licenseNumber, doctorName) {
   if (!licenseNumber || licenseNumber.length < 4) {
     return { verified: false, method: 'format_check', note: 'License number too short or missing.' };
@@ -93,7 +87,6 @@ function verifyPRCLicense(licenseNumber, doctorName) {
   if (!isPRCFormat) {
     return { verified: false, method: 'format_check', note: `"${licenseNumber}" does not match PRC 7-digit format.` };
   }
-  // Format passes — flag for manual verification since no public API exists
   return {
     verified: 'format_ok',
     method: 'format_check',
@@ -116,7 +109,7 @@ app.post('/api/auth/login', (req, res) => {
   res.json({ token, user: { id: user.id, username: user.username, role: user.role, level: user.level } });
 });
 
-// ─── SHARED PROMPT (one call does OCR + fraud observations together) ─────────
+// ─── SHARED PROMPT ─────────────────────────────────────────────────────────
 function buildCombinedPrompt(submissionType) {
   return `You are a medical-certificate OCR and fraud-detection expert.
 Submission type: ${submissionType}
@@ -184,36 +177,34 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// ─── PROVIDER: GEMINI ──────────────────────────────────────────────────────
-// Uses the current @google/genai SDK (the old @google/generative-ai package
-// is end-of-life and was archived). thinkingConfig.thinkingBudget=0 turns off
-// Gemini 2.5's "thinking" step, which is the main reason plain OCR/JSON
-// extraction calls were taking many extra seconds for no benefit here.
+// ─── FIXED: GEMINI CALL ──────────────────────────────────────────────────
 async function callGemini(fileBuffer, mimeType, submissionType) {
   if (!genAI) throw new Error('Gemini not configured (GEMINI_API_KEY missing)');
-  const response = await genAI.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: [{
-      role: 'user',
-      parts: [
-        { inlineData: { mimeType, data: fileBuffer.toString('base64') } },
-        { text: buildCombinedPrompt(submissionType) }
-      ]
-    }],
-    config: {
-      responseMimeType: 'application/json',
-      thinkingConfig: { thinkingBudget: 0 }
-    }
+  
+  // Correct usage for @google/generative-ai
+  const model = genAI.getGenerativeModel({ 
+    model: GEMINI_MODEL 
   });
-  const text = response.text ?? response.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
+  
+  const prompt = buildCombinedPrompt(submissionType);
+  
+  const result = await model.generateContent([
+    {
+      inlineData: {
+        mimeType: mimeType,
+        data: fileBuffer.toString('base64')
+      }
+    },
+    { text: prompt }
+  ]);
+  
+  const response = await result.response;
+  const text = response.text();
+  
   return parseCombinedJson(text);
 }
 
-// ─── PROVIDER: GROQ (fallback) ─────────────────────────────────────────────
-// OpenAI-compatible endpoint, no SDK dependency needed (Node 18+ has fetch).
-// Groq's LPU inference is typically much faster than Gemini even with
-// thinking disabled, which makes it a good "speed" fallback too, not just
-// a reliability one.
+// ─── GROQ CALL ──────────────────────────────────────────────────────────
 async function callGroq(fileBuffer, mimeType, submissionType) {
   if (!GROQ_API_KEY) throw new Error('Groq not configured (GROQ_API_KEY missing)');
   const dataUrl = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
@@ -248,10 +239,7 @@ async function callGroq(fileBuffer, mimeType, submissionType) {
   return parseCombinedJson(text);
 }
 
-// ─── AI ORCHESTRATOR: try Gemini, fail over to Groq, else null ────────────
-// This makes ONE model call per provider attempt (not two, like the old
-// extractWithGemini + getAiObservations pair did) and enforces a hard
-// per-provider timeout so a slow provider can't stall the whole request.
+// ─── AI ORCHESTRATOR ────────────────────────────────────────────────────
 async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
   const providers = [];
   if (GEMINI_API_KEY) providers.push({ name: 'gemini', fn: callGemini });
@@ -270,22 +258,19 @@ async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
       console.error(`${provider.name} returned malformed data, trying next provider`);
     } catch (e) {
       console.error(`${provider.name} failed:`, e.message);
-      // fall through to next provider
     }
   }
-  return null; // every configured provider failed -> caller drops to rule-only mode
+  return null;
 }
 
-// ─── CORE ANALYSIS FUNCTION (reused by single + batch) ───────────────────────
+// ─── CORE ANALYSIS FUNCTION ──────────────────────────────────────────────────
 async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSize, username) {
   const analysisId    = uuidv4();
   const startTime      = Date.now();
   const submissionType = detectSubmissionType(fileBuffer, mimeType, originalname);
 
-  // STEP 1: ONE combined AI call (OCR + fraud observations), with fallback
   const aiResult = await analyzeWithAI(fileBuffer, mimeType, submissionType);
   const aiAvailable = aiResult !== null;
-  const ocrAvailable = aiAvailable; // OCR and observations now come from the same call
 
   let extractedInfo = aiResult?.extractedInfo || {
     doctorName:'', hospitalName:'', patientName:'', diagnosis:'',
@@ -295,7 +280,6 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     isFilledTemplate:'No', documentType:'unknown'
   };
 
-  // STEP 2: BLANK TEMPLATE CHECK
   const { isBlankTemplate, blankCoreFields, blankRatio } = detectBlankTemplate(extractedInfo);
   const isExplicitlyUnfilled = extractedInfo.isFilledTemplate === 'No';
 
@@ -309,7 +293,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
       submissionType,
       isBlankTemplate: true,
       templateWarning: `This is an unfilled official template — ${blankRatio}% of fields are empty. Please upload a completed certificate with patient details filled in.`,
-      ocrAvailable,
+      ocrAvailable: aiAvailable,
       aiAvailable: false,
       aiProvider: aiResult?.provider || null,
       extractedInfo,
@@ -338,16 +322,9 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     return result;
   }
 
-  // STEP 3: RULE ENGINE
   const { checks, passed, failed, ruleScore, confidenceMap } = runAllRules(extractedInfo);
+  const prcVerification = verifyPRCLicense(extractedInfo.registrationNumber, extractedInfo.doctorName);
 
-  // STEP 4: PRC LICENSE VERIFICATION
-  const prcVerification = verifyPRCLicense(
-    extractedInfo.registrationNumber,
-    extractedInfo.doctorName
-  );
-
-  // STEP 5: AI OBSERVATIONS (already fetched in STEP 1 — reuse, with a rule-only fallback)
   let aiObservations = aiResult?.aiObservations || null;
   if (!aiObservations) {
     aiObservations = [
@@ -359,7 +336,6 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     ];
   }
 
-  // STEP 6: COMBINED SCORE
   let authenticityScore;
   if (aiAvailable) {
     const negativeWords = ['fraudulent','suspicious','conflict','error','fake','template','invalid','missing','generic','absent','blank','unclear','forged','fabricated'];
@@ -371,10 +347,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     authenticityScore = ruleScore;
   }
 
-  // Submission type penalty
   if (submissionType === 'screenshot') authenticityScore = Math.max(0, authenticityScore - 5);
-
-  // PRC format bonus
   if (prcVerification.verified === 'format_ok') authenticityScore = Math.min(100, authenticityScore + 5);
 
   const riskLevel = authenticityScore >= 70 ? 'LOW_RISK'
@@ -401,7 +374,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     fileSize,
     submissionType,
     isBlankTemplate: false,
-    ocrAvailable,
+    ocrAvailable: aiAvailable,
     aiAvailable,
     aiProvider: aiResult?.provider || null,
     extractedInfo,
