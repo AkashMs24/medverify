@@ -7,6 +7,8 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const fs = require('fs');
+const pdfParse = require('pdf-parse');
 const { runAllRules, detectBlankTemplate } = require('./rules');
 
 const app = express();
@@ -27,6 +29,12 @@ const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
 
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const frontendBuild = path.join(__dirname, '..', '..', 'frontend', 'build');
 app.use(express.static(frontendBuild));
 
@@ -39,8 +47,18 @@ const users = [
 
 const auditLog = [];
 
+// Configure multer to save files temporarily for PDF processing
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'application/pdf'];
@@ -49,7 +67,7 @@ const upload = multer({
 });
 
 const uploadBatch = multer({
-  storage: multer.memoryStorage(),
+  storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'application/pdf'];
@@ -109,9 +127,12 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // ─── SHARED PROMPT ─────────────────────────────────────────────────────────
-function buildCombinedPrompt(submissionType) {
+function buildCombinedPrompt(submissionType, extractedText = '') {
+  // If we have extracted text from PDF, include it in the prompt
+  const textContext = extractedText ? `\n\nHere is the extracted text from the PDF:\n${extractedText}\n\n` : '';
+  
   return `You are a medical-certificate OCR and fraud-detection expert.
-Submission type: ${submissionType}
+Submission type: ${submissionType}${textContext}
 
 Look carefully at the attached certificate image/document and respond with ONLY a single valid JSON object — no markdown, no code fences, no commentary before or after it — in EXACTLY this shape:
 
@@ -142,11 +163,22 @@ Look carefully at the attached certificate image/document and respond with ONLY 
   ]
 }
 
+IMPORTANT: Extract ALL information present in the document. Look for:
+- Doctor's name (look for "Dr.", "Doctor", or name after "I, Dr.")
+- Hospital/Clinic name
+- Patient's name (look for "patient", "Mr.", "Ms.", or name before "signature")
+- Diagnosis/condition
+- Issue date (look for "Date:", "Dated:")
+- Leave dates (look for "from", "to", or date ranges)
+- Registration number (look for "Reg. No:", "Registration No:")
+- Doctor qualifications (look for "M.B.B.S.", "M.D.", etc.)
+- Signature/Seal presence
+
 Rules:
 - If a field is blank/empty in the document, return "" for that field.
 - If a field exists but you cannot read it clearly, return "unclear".
 - aiObservations must contain exactly 5 strings, in the order described above.
-- If this is a blank/unfilled official template, say so clearly in the first observation and set isFilledTemplate to "No".
+- If this is a completed certificate with patient details, set isFilledTemplate to "Yes".
 - Respond with raw JSON only.`;
 }
 
@@ -176,37 +208,59 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// ─── EXTRACT TEXT FROM PDF ──────────────────────────────────────────────────
+async function extractTextFromPDF(filePath) {
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    const data = await pdfParse(dataBuffer);
+    return data.text;
+  } catch (error) {
+    console.error('PDF extraction error:', error);
+    return '';
+  }
+}
+
 // ─── FIXED: GEMINI CALL ──────────────────────────────────────────────────
-async function callGemini(fileBuffer, mimeType, submissionType) {
+async function callGemini(fileBuffer, mimeType, submissionType, extractedText = '') {
   if (!genAI) throw new Error('Gemini not configured (GEMINI_API_KEY missing)');
 
   try {
     const model = genAI.getGenerativeModel({
       model: GEMINI_MODEL,
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0.1,
         maxOutputTokens: 2048,
       }
     });
 
     const base64Data = fileBuffer.toString('base64');
-    const prompt = buildCombinedPrompt(submissionType);
+    const prompt = buildCombinedPrompt(submissionType, extractedText);
 
-    const result = await model.generateContent({
-      contents: [{
-        role: 'user',
-        parts: [{
-          inline_data: {
-            mime_type: mimeType,
-            data: base64Data
-          }
-        },
-        {
-          text: prompt
-        }
-        ]
-      }]
-    });
+    // For PDFs with extracted text, we can use text-only mode or vision mode
+    let result;
+    if (mimeType === 'application/pdf' && extractedText) {
+      // Use text-only mode for PDFs (more reliable)
+      const textPrompt = `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`;
+      result = await model.generateContent(textPrompt);
+    } else {
+      // Use vision mode for images
+      result = await model.generateContent({
+        contents: [{
+          role: 'user',
+          parts: [
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: base64Data
+              }
+            },
+            {
+              text: prompt
+            }
+          ]
+        }]
+      });
+    }
 
     const response = result.response;
     const text = response.text();
@@ -225,9 +279,29 @@ async function callGemini(fileBuffer, mimeType, submissionType) {
 }
 
 // ─── GROQ CALL ──────────────────────────────────────────────────────────
-async function callGroq(fileBuffer, mimeType, submissionType) {
+async function callGroq(fileBuffer, mimeType, submissionType, extractedText = '') {
   if (!GROQ_API_KEY) throw new Error('Groq not configured (GROQ_API_KEY missing)');
   const dataUrl = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+  const prompt = buildCombinedPrompt(submissionType, extractedText);
+
+  const messages = [];
+  
+  // For PDFs with extracted text, use text-only mode
+  if (mimeType === 'application/pdf' && extractedText) {
+    messages.push({
+      role: 'user',
+      content: `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`
+    });
+  } else {
+    // Use vision mode for images
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: dataUrl } }
+      ]
+    });
+  }
 
   const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -237,15 +311,9 @@ async function callGroq(fileBuffer, mimeType, submissionType) {
     },
     body: JSON.stringify({
       model: GROQ_VISION_MODEL,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: buildCombinedPrompt(submissionType) },
-          { type: 'image_url', image_url: { url: dataUrl } }
-        ]
-      }],
-      temperature: 0.2,
-      max_completion_tokens: 1500,
+      messages: messages,
+      temperature: 0.1,
+      max_completion_tokens: 2048,
       response_format: { type: 'json_object' }
     })
   });
@@ -260,7 +328,7 @@ async function callGroq(fileBuffer, mimeType, submissionType) {
 }
 
 // ─── AI ORCHESTRATOR ────────────────────────────────────────────────────
-async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
+async function analyzeWithAI(fileBuffer, mimeType, submissionType, extractedText = '') {
   const providers = [];
 
   // Try Groq first as it's often more reliable
@@ -271,12 +339,13 @@ async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
     try {
       console.log(`🔄 Trying ${provider.name}...`);
       const parsed = await withTimeout(
-        provider.fn(fileBuffer, mimeType, submissionType),
+        provider.fn(fileBuffer, mimeType, submissionType, extractedText),
         AI_TIMEOUT_MS,
         provider.name
       );
       if (isValidCombinedResult(parsed)) {
         console.log(`✅ ${provider.name} succeeded`);
+        console.log('📊 Extracted Info:', JSON.stringify(parsed.extractedInfo, null, 2));
         return {
           extractedInfo: parsed.extractedInfo,
           aiObservations: parsed.aiObservations,
@@ -294,12 +363,23 @@ async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
 }
 
 // ─── CORE ANALYSIS FUNCTION ──────────────────────────────────────────────────
-async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSize, username) {
+async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSize, username, filePath) {
   const analysisId = uuidv4();
   const startTime = Date.now();
   const submissionType = detectSubmissionType(fileBuffer, mimeType, originalname);
 
-  const aiResult = await analyzeWithAI(fileBuffer, mimeType, submissionType);
+  // Extract text from PDF if applicable
+  let extractedText = '';
+  if (mimeType === 'application/pdf' && filePath) {
+    try {
+      extractedText = await extractTextFromPDF(filePath);
+      console.log('📄 Extracted PDF Text:', extractedText.substring(0, 500) + '...');
+    } catch (e) {
+      console.error('Failed to extract PDF text:', e);
+    }
+  }
+
+  const aiResult = await analyzeWithAI(fileBuffer, mimeType, submissionType, extractedText);
   const aiAvailable = aiResult !== null;
 
   let extractedInfo = aiResult?.extractedInfo || {
@@ -310,10 +390,26 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     isFilledTemplate: 'No', documentType: 'unknown'
   };
 
+  // If AI failed but we have extracted text from PDF, try to parse it manually
+  if (!aiAvailable && extractedText) {
+    console.log('⚠️ AI failed, attempting manual text parsing...');
+    // Try to extract basic info from text using regex
+    const manualExtracted = manualExtractFromText(extractedText);
+    extractedInfo = { ...extractedInfo, ...manualExtracted };
+    console.log('📊 Manual Extraction:', manualExtracted);
+  }
+
   const { isBlankTemplate, blankCoreFields, blankRatio } = detectBlankTemplate(extractedInfo);
   const isExplicitlyUnfilled = extractedInfo.isFilledTemplate === 'No';
 
-  if (isBlankTemplate || isExplicitlyUnfilled) {
+  // Check if it's actually a blank template or just a parsing issue
+  const hasSomeData = extractedInfo.doctorName || extractedInfo.patientName || 
+                      extractedInfo.issueDate || extractedInfo.diagnosis;
+  
+  // If there's data but we detected blank template, override it
+  const actuallyBlank = (isBlankTemplate || isExplicitlyUnfilled) && !hasSomeData;
+
+  if (actuallyBlank) {
     const result = {
       analysisId,
       timestamp: new Date().toISOString(),
@@ -349,9 +445,14 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
       user: username, filename: originalname,
       score: 'N/A', riskLevel: 'TEMPLATE_DETECTED', passed: 0, failed: 0
     });
+    // Clean up uploaded file
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
     return result;
   }
 
+  // Run rules on extracted info
   const { checks, passed, failed, ruleScore, confidenceMap } = runAllRules(extractedInfo);
   const prcVerification = verifyPRCLicense(extractedInfo.registrationNumber, extractedInfo.doctorName);
 
@@ -396,6 +497,11 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     score: authenticityScore, riskLevel, passed, failed
   });
 
+  // Clean up uploaded file
+  if (filePath && fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+
   return {
     analysisId,
     timestamp: new Date().toISOString(),
@@ -421,6 +527,60 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
   };
 }
 
+// ─── MANUAL TEXT EXTRACTION FROM PDF ──────────────────────────────────────
+function manualExtractFromText(text) {
+  const extracted = {};
+  
+  // Extract Doctor Name
+  const doctorMatch = text.match(/(?:Dr\.|Doctor)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
+  if (doctorMatch) extracted.doctorName = doctorMatch[1].trim();
+  
+  // Extract Registration Number
+  const regMatch = text.match(/(?:Reg\.\s*No\.|Registration\s*No\.)\s*[:.]?\s*([A-Z0-9\-]+)/i);
+  if (regMatch) extracted.registrationNumber = regMatch[1].trim();
+  
+  // Extract Patient Name
+  const patientMatch = text.match(/(?:patient|Mr\.|Ms\.|Mrs\.)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
+  if (patientMatch) extracted.patientName = patientMatch[1].trim();
+  
+  // Extract Diagnosis
+  const diagMatch = text.match(/(?:suffering from|diagnosis|diagnosed with)\s+([A-Za-z\s]+?)(?:,|\.|and)/i);
+  if (diagMatch) extracted.diagnosis = diagMatch[1].trim();
+  
+  // Extract Date
+  const dateMatch = text.match(/(?:Date|Dated)\s*[:.]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+  if (dateMatch) extracted.issueDate = dateMatch[1].trim();
+  
+  // Extract Hospital/Clinic
+  const hospitalMatch = text.match(/([A-Za-z]+\s+(?:Hospital|Clinic|Medical Center|Health Center|Family Clinic))/i);
+  if (hospitalMatch) extracted.hospitalName = hospitalMatch[1].trim();
+  
+  // Extract Qualifications
+  const qualMatch = text.match(/(M\.B\.B\.S\.|M\.D\.|B\.H\.M\.S\.|B\.A\.M\.S\.|B\.D\.S\.|D\.M\.D\.)/g);
+  if (qualMatch) extracted.doctorQualifications = qualMatch.join(', ');
+  
+  // Check if it's filled (has patient name and doctor name)
+  if (extracted.patientName && extracted.doctorName) {
+    extracted.isFilledTemplate = 'Yes';
+  } else {
+    extracted.isFilledTemplate = 'No';
+  }
+  
+  // Extract leave dates
+  const leaveMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*to\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+  if (leaveMatch) {
+    extracted.leaveFrom = leaveMatch[1].trim();
+    extracted.leaveTo = leaveMatch[2].trim();
+  }
+  
+  // Extract signature presence
+  if (text.includes('signature') || text.includes('Signature') || text.includes('SIGNATURE')) {
+    extracted.signatureSealPresent = 'Yes';
+  }
+  
+  return extracted;
+}
+
 // ─── SINGLE ANALYZE ───────────────────────────────────────────────────────────
 app.post('/api/analyze', authMiddleware, upload.single('certificate'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -428,7 +588,8 @@ app.post('/api/analyze', authMiddleware, upload.single('certificate'), async (re
     const result = await analyzeOneCertificate(
       req.file.buffer, req.file.mimetype,
       req.file.originalname, req.file.size,
-      req.user.username
+      req.user.username,
+      req.file.path // Pass the file path for PDF processing
     );
     res.json(result);
   } catch (error) {
@@ -446,7 +607,7 @@ app.post('/api/analyze/batch', authMiddleware, (req, res) => {
     try {
       const results = await Promise.all(
         req.files.map(f =>
-          analyzeOneCertificate(f.buffer, f.mimetype, f.originalname, f.size, req.user.username)
+          analyzeOneCertificate(f.buffer, f.mimetype, f.originalname, f.size, req.user.username, f.path)
         )
       );
       res.json({
@@ -477,7 +638,7 @@ app.get('/api/health', (req, res) => res.json({
   geminiConfigured: !!GEMINI_API_KEY,
   groqConfigured: !!GROQ_API_KEY,
   aiTimeoutMs: AI_TIMEOUT_MS,
-  features: ['blank-template-detection', 'prc-format-check', 'batch-upload', 'confidence-scoring', 'submission-type-detection', 'ai-provider-fallback']
+  features: ['blank-template-detection', 'prc-format-check', 'batch-upload', 'confidence-scoring', 'submission-type-detection', 'ai-provider-fallback', 'pdf-text-extraction']
 }));
 
 app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
@@ -487,5 +648,5 @@ app.listen(PORT, () => {
   console.log(`🤖 Gemini: ${GEMINI_API_KEY ? `Configured ✓ (${GEMINI_MODEL})` : 'NOT set'}`);
   console.log(`🤖 Groq fallback: ${GROQ_API_KEY ? `Configured ✓ (${GROQ_VISION_MODEL})` : 'NOT set'}`);
   if (!GEMINI_API_KEY && !GROQ_API_KEY) console.log('⚠️  No AI provider configured → rule-only mode');
-  console.log(`🚀 Features: Blank Template Detection | PRC Format Check | Batch Upload | Confidence Scores | AI Fallback`);
+  console.log(`🚀 Features: Blank Template Detection | PRC Format Check | Batch Upload | Confidence Scores | AI Fallback | PDF Text Extraction`);
 });
