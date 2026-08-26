@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
@@ -26,12 +26,20 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-// Using the CORRECT model names
-const GEMINI_MODEL = 'gemini-1.5-flash';
-const GROQ_VISION_MODEL = 'llama-3.2-11b-vision-preview';
+// Model names — verified current/live as of Aug 2026.
+// Gemini 1.5 models were fully shut down; gemini-3.6-flash is the current
+// GA multimodal Flash model. Groq deprecated llama-3.1/3.3 + the old vision
+// preview models, so we use their current production/preview models instead.
+// NOTE: providers retire models fairly often — if you see a
+// "model_decommissioned" / 404 "not found for API version" error again,
+// check https://console.groq.com/docs/models and
+// https://ai.google.dev/gemini-api/docs/models and update these constants.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'qwen/qwen3.6-27b'; // multimodal (text+image)
+const GROQ_TEXT_MODEL = process.env.GROQ_TEXT_MODEL || 'openai/gpt-oss-120b'; // text-only fallback
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
 
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
@@ -310,37 +318,36 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
     const fileBuffer = readFileToBuffer(filePath);
     if (!fileBuffer) throw new Error('Could not read file');
 
-    // Try with the model name as is
-    const model = genAI.getGenerativeModel({
-      model: GEMINI_MODEL,
-    });
-
     const base64Data = fileBuffer.toString('base64');
     const prompt = buildCombinedPrompt(submissionType, extractedText);
 
     // For PDFs with extracted text, use text-only
     if (mimeType === 'application/pdf' && extractedText) {
       const textPrompt = `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`;
-      const result = await model.generateContent(textPrompt);
-      const response = result.response;
-      const text = response.text();
+      const result = await genAI.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: textPrompt,
+      });
+      const text = result.text;
       if (!text) throw new Error('Empty response');
       return parseCombinedJson(text);
     }
 
     // For images, use vision
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: mimeType,
-          data: base64Data
-        }
-      },
-      { text: prompt }
-    ]);
+    const result = await genAI.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: mimeType, data: base64Data } },
+            { text: prompt },
+          ],
+        },
+      ],
+    });
 
-    const response = result.response;
-    const text = response.text();
+    const text = result.text;
     if (!text) throw new Error('Empty response');
     return parseCombinedJson(text);
 
@@ -418,7 +425,7 @@ async function callGroq(filePath, mimeType, submissionType, extractedText = '') 
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'llama-3.1-70b-versatile', // Text-only model fallback
+          model: GROQ_TEXT_MODEL, // Text-only model fallback
           messages: textMessages,
           temperature: 0.1,
           max_completion_tokens: 2048,
