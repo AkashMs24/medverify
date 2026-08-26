@@ -26,8 +26,9 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 // ─── AI PROVIDER CONFIG ─────────────────────────────────────────────────────
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
+// FIXED: Updated to supported models
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'llama-3.2-90b-vision-preview';
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
 
 // Initialize Gemini with correct package
@@ -245,13 +246,14 @@ function manualExtractFromText(text) {
   let doctorMatch = text.match(/(?:Dr\.|Doctor)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
   if (doctorMatch) extracted.doctorName = doctorMatch[1].trim();
   
-  // Try alternative: "I, Dr. X" pattern
   let doctorMatch2 = text.match(/I,\s*Dr\.\s*([A-Za-z]+\s+[A-Za-z]+)/i);
   if (doctorMatch2 && !extracted.doctorName) extracted.doctorName = doctorMatch2[1].trim();
   
-  // Try: just "Dr. X" at start
   let doctorMatch3 = text.match(/^Dr\.\s+([A-Za-z]+\s+[A-Za-z]+)/im);
   if (doctorMatch3 && !extracted.doctorName) extracted.doctorName = doctorMatch3[1].trim();
+  
+  let doctorMatch4 = text.match(/SIGNATURE OF MEDICAL OFFICER\s+([A-Za-z]+\s+[A-Za-z]+)/i);
+  if (doctorMatch4 && !extracted.doctorName) extracted.doctorName = doctorMatch4[1].trim();
   
   // Extract Registration Number
   const regMatch = text.match(/(?:Reg\.\s*No\.|Registration\s*No\.)\s*[:.]?\s*([A-Z0-9\-]+)/i);
@@ -261,11 +263,9 @@ function manualExtractFromText(text) {
   let patientMatch = text.match(/(?:patient|Mr\.|Ms\.|Mrs\.)\s+([A-Za-z]+\s+[A-Za-z]+)/i);
   if (patientMatch) extracted.patientName = patientMatch[1].trim();
   
-  // Alternative: "certify that X" pattern
   let patientMatch2 = text.match(/certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i);
   if (patientMatch2 && !extracted.patientName) extracted.patientName = patientMatch2[1].trim();
   
-  // Alternative: "hereby certify that X" pattern
   let patientMatch3 = text.match(/hereby certify that\s+([A-Za-z]+\s+[A-Za-z]+)/i);
   if (patientMatch3 && !extracted.patientName) extracted.patientName = patientMatch3[1].trim();
   
@@ -273,19 +273,13 @@ function manualExtractFromText(text) {
   let diagMatch = text.match(/(?:suffering from|diagnosis|diagnosed with)\s+([A-Za-z\s,]+?)(?:,|\.|and|for|\(|the following)/i);
   if (diagMatch) extracted.diagnosis = diagMatch[1].trim();
   
-  // Alternative: "is suffering from X" pattern
   let diagMatch2 = text.match(/is suffering from\s+([A-Za-z\s,]+?)(?:,|\.|and)/i);
   if (diagMatch2 && !extracted.diagnosis) extracted.diagnosis = diagMatch2[1].trim();
-  
-  // Alternative: "advised: X to Y" pattern
-  let diagMatch3 = text.match(/advised:\s*([A-Za-z\s,]+?)(?:\d|\,|\.)/i);
-  if (diagMatch3 && !extracted.diagnosis) extracted.diagnosis = diagMatch3[1].trim();
   
   // Extract Date
   let dateMatch = text.match(/(?:Date|Dated)\s*[:.]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
   if (dateMatch) extracted.issueDate = dateMatch[1].trim();
   
-  // Alternative: date at start
   let dateMatch2 = text.match(/^Date:\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/im);
   if (dateMatch2 && !extracted.issueDate) extracted.issueDate = dateMatch2[1].trim();
   
@@ -296,7 +290,6 @@ function manualExtractFromText(text) {
   // Extract Qualifications
   let qualMatch = text.match(/(M\.B\.B\.S\.|M\.D\.|B\.H\.M\.S\.|B\.A\.M\.S\.|B\.D\.S\.|D\.M\.D\.|M\.S\.|D\.N\.B\.)/g);
   if (qualMatch) {
-    // Remove duplicates
     const uniqueQuals = [...new Set(qualMatch)];
     extracted.doctorQualifications = uniqueQuals.join(', ');
   }
@@ -308,7 +301,6 @@ function manualExtractFromText(text) {
     extracted.leaveTo = leaveMatch[2].trim();
   }
   
-  // Alternative: date range with "to"
   let leaveMatch2 = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})\s*–\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
   if (leaveMatch2 && !extracted.leaveFrom) {
     extracted.leaveFrom = leaveMatch2[1].trim();
@@ -320,28 +312,11 @@ function manualExtractFromText(text) {
     extracted.signatureSealPresent = 'Yes';
   }
   
-  // Check if it's filled - patient name and doctor name are key indicators
+  // Check if it's filled
   if (extracted.patientName || extracted.doctorName || extracted.diagnosis) {
     extracted.isFilledTemplate = 'Yes';
   } else {
     extracted.isFilledTemplate = 'No';
-  }
-  
-  // If we have patient name but no doctor name, try to find it again
-  if (!extracted.doctorName) {
-    const docNameMatch = text.match(/SIGNATURE OF MEDICAL OFFICER\s+([A-Za-z]+\s+[A-Za-z]+)/i);
-    if (docNameMatch) extracted.doctorName = docNameMatch[1].trim();
-  }
-  
-  // Try to get doctor qualifications from signature block
-  if (!extracted.doctorQualifications) {
-    const qualMatch2 = text.match(/Dr\.\s+[A-Za-z]+\s+[A-Za-z]+\s+([A-Za-z.,\s]+?)(?:\n|Reg)/i);
-    if (qualMatch2) {
-      const quals = qualMatch2[1].trim();
-      if (quals.match(/(M\.B\.B\.S\.|M\.D\.|B\.H\.M\.S\.)/i)) {
-        extracted.doctorQualifications = quals;
-      }
-    }
   }
   
   return extracted;
@@ -352,7 +327,6 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
   if (!genAI) throw new Error('Gemini not configured (GEMINI_API_KEY missing)');
 
   try {
-    // Read file to buffer
     const fileBuffer = readFileToBuffer(filePath);
     if (!fileBuffer) {
       throw new Error('Could not read file');
@@ -363,6 +337,7 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 2048,
+        responseMimeType: 'application/json',
       }
     });
 
@@ -371,16 +346,14 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
 
     let result;
     if (mimeType === 'application/pdf' && extractedText) {
-      // Use text-only mode for PDFs
       const textPrompt = `Analyze this medical certificate text and extract information in JSON format.\n\n${extractedText}\n\n${prompt}`;
       result = await model.generateContent(textPrompt);
     } else {
-      // Use vision mode for images
       result = await model.generateContent({
         contents: [{
           role: 'user',
           parts: [
-            { inline_data: { mime_type: mimeType, data: base64Data } },
+            { inlineData: { mimeType: mimeType, data: base64Data } },
             { text: prompt }
           ]
         }]
@@ -402,11 +375,10 @@ async function callGemini(filePath, mimeType, submissionType, extractedText = ''
   }
 }
 
-// ─── GROQ CALL ──────────────────────────────────────────────────────────
+// ─── FIXED: GROQ CALL ──────────────────────────────────────────────────────────
 async function callGroq(filePath, mimeType, submissionType, extractedText = '') {
   if (!GROQ_API_KEY) throw new Error('Groq not configured (GROQ_API_KEY missing)');
   
-  // Read file to buffer
   const fileBuffer = readFileToBuffer(filePath);
   if (!fileBuffer) {
     throw new Error('Could not read file');
@@ -521,7 +493,6 @@ async function analyzeOneCertificate(filePath, mimeType, originalname, fileSize,
   if ((!aiAvailable || !extractedInfo.doctorName) && extractedText) {
     console.log('⚠️ AI failed or incomplete, attempting manual text parsing...');
     const manualExtracted = manualExtractFromText(extractedText);
-    // Merge, but don't override AI data if it exists
     extractedInfo = { ...manualExtracted, ...extractedInfo };
     console.log('📊 Manual Extraction:', manualExtracted);
   }
