@@ -2,7 +2,7 @@ require('dotenv').config();
 const express  = require('express');
 const cors     = require('cors');
 const multer   = require('multer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const jwt      = require('jsonwebtoken');
 const bcrypt   = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
@@ -12,8 +12,20 @@ const { runAllRules, detectBlankTemplate } = require('./rules');
 const app        = express();
 const PORT       = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'medverify_secret_key_2024';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const NODE_ENV   = process.env.NODE_ENV || 'development';
+
+// ─── AI PROVIDER CONFIG ─────────────────────────────────────────────────────
+const GEMINI_API_KEY   = process.env.GEMINI_API_KEY || '';
+const GROQ_API_KEY     = process.env.GROQ_API_KEY || '';
+const GEMINI_MODEL     = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Groq's multimodal lineup changes often — override via env if this model gets retired.
+// Check https://console.groq.com/docs/vision for the current list.
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+// Per-provider hard timeout. If a provider doesn't answer in time we fail over
+// instead of leaving the user staring at a spinner.
+const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '15000', 10);
+
+const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
@@ -104,97 +116,184 @@ app.post('/api/auth/login', (req, res) => {
   res.json({ token, user: { id: user.id, username: user.username, role: user.role, level: user.level } });
 });
 
-// ─── STEP 1: OCR ──────────────────────────────────────────────────────────────
-async function extractWithGemini(fileBuffer, mimeType) {
-  if (!GEMINI_API_KEY) return null;
-  try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const prompt = `Extract all fields from this medical certificate image carefully.
-If a field is blank/empty in the document, return "" for that field.
-If a field exists but you cannot read it clearly, return "unclear".
-Respond ONLY with valid JSON, no markdown:
+// ─── SHARED PROMPT (one call does OCR + fraud observations together) ─────────
+function buildCombinedPrompt(submissionType) {
+  return `You are a medical-certificate OCR and fraud-detection expert.
+Submission type: ${submissionType}
+
+Look carefully at the attached certificate image/document and respond with ONLY a single valid JSON object — no markdown, no code fences, no commentary before or after it — in EXACTLY this shape:
+
 {
-  "doctorName": "",
-  "hospitalName": "",
-  "patientName": "",
-  "diagnosis": "",
-  "issueDate": "",
-  "leaveFrom": "",
-  "leaveTo": "",
-  "phone": "",
-  "referenceNumber": "",
-  "signatureSealPresent": "Yes/No",
-  "address": "",
-  "doctorQualifications": "",
-  "registrationNumber": "",
-  "isFilledTemplate": "Yes/No",
-  "documentType": "medical_certificate/clearance/prescription/other"
-}`;
-    const result = await model.generateContent([
-      { inlineData: { mimeType, data: fileBuffer.toString('base64') } },
-      prompt
-    ]);
-    const text = result.response.text().replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-    try { return JSON.parse(text); }
-    catch { const m = text.match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : null; }
-  } catch (e) {
-    console.error('OCR failed:', e.message);
-    return null;
+  "extractedInfo": {
+    "doctorName": "",
+    "hospitalName": "",
+    "patientName": "",
+    "diagnosis": "",
+    "issueDate": "",
+    "leaveFrom": "",
+    "leaveTo": "",
+    "phone": "",
+    "referenceNumber": "",
+    "signatureSealPresent": "Yes/No",
+    "address": "",
+    "doctorQualifications": "",
+    "registrationNumber": "",
+    "isFilledTemplate": "Yes/No",
+    "documentType": "medical_certificate/clearance/prescription/other"
+  },
+  "aiObservations": [
+    "observation about whether this is a blank/unfilled template vs a completed certificate",
+    "observation about template/Canva design indicators or non-standard formatting",
+    "observation about signature authenticity - wet ink vs digital overlay vs absent",
+    "observation about logical conflicts - role conflicts, date issues, address mismatches",
+    "observation giving an overall fraud risk assessment"
+  ]
+}
+
+Rules:
+- If a field is blank/empty in the document, return "" for that field.
+- If a field exists but you cannot read it clearly, return "unclear".
+- aiObservations must contain exactly 5 strings, in the order described above.
+- If this is a blank/unfilled official template, say so clearly in the first observation and set isFilledTemplate to "No".
+- Respond with raw JSON only.`;
+}
+
+function parseCombinedJson(rawText) {
+  const cleaned = (rawText || '').replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    throw new Error('Could not parse AI JSON response');
   }
 }
 
-// ─── STEP 2: AI OBSERVATIONS ──────────────────────────────────────────────────
-async function getAiObservations(extractedInfo, fileBuffer, mimeType, submissionType) {
-  if (!GEMINI_API_KEY) return null;
-  try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    const prompt = `You are a medical certificate fraud detection expert.
-Submission type: ${submissionType}
-Extracted info: ${JSON.stringify(extractedInfo, null, 2)}
+function isValidCombinedResult(parsed) {
+  return !!parsed
+    && parsed.extractedInfo && typeof parsed.extractedInfo === 'object'
+    && Array.isArray(parsed.aiObservations)
+    && parsed.aiObservations.length > 0;
+}
 
-Analyze the certificate image carefully and give 5 specific fraud observations covering:
-1. Whether this is a blank/unfilled template vs a completed certificate
-2. Template/Canva design indicators or non-standard formatting
-3. Signature authenticity — wet ink vs digital overlay vs absent
-4. Logical conflicts — role conflicts, date issues, address mismatches
-5. Overall fraud risk assessment
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
-IMPORTANT: If this is a blank template, say so clearly in observation 1.
-Respond ONLY with a JSON array of exactly 5 strings. No markdown:
-["observation 1", "observation 2", "observation 3", "observation 4", "observation 5"]`;
-    const result = await model.generateContent([
-      { inlineData: { mimeType, data: fileBuffer.toString('base64') } },
-      prompt
-    ]);
-    const text = result.response.text().replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-    try { return JSON.parse(text); }
-    catch { const m = text.match(/\[[\s\S]*\]/); return m ? JSON.parse(m[0]) : null; }
-  } catch (e) {
-    console.error('AI observations failed:', e.message);
-    return null;
+// ─── PROVIDER: GEMINI ──────────────────────────────────────────────────────
+// Uses the current @google/genai SDK (the old @google/generative-ai package
+// is end-of-life and was archived). thinkingConfig.thinkingBudget=0 turns off
+// Gemini 2.5's "thinking" step, which is the main reason plain OCR/JSON
+// extraction calls were taking many extra seconds for no benefit here.
+async function callGemini(fileBuffer, mimeType, submissionType) {
+  if (!genAI) throw new Error('Gemini not configured (GEMINI_API_KEY missing)');
+  const response = await genAI.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: [{
+      role: 'user',
+      parts: [
+        { inlineData: { mimeType, data: fileBuffer.toString('base64') } },
+        { text: buildCombinedPrompt(submissionType) }
+      ]
+    }],
+    config: {
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingBudget: 0 }
+    }
+  });
+  const text = response.text ?? response.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
+  return parseCombinedJson(text);
+}
+
+// ─── PROVIDER: GROQ (fallback) ─────────────────────────────────────────────
+// OpenAI-compatible endpoint, no SDK dependency needed (Node 18+ has fetch).
+// Groq's LPU inference is typically much faster than Gemini even with
+// thinking disabled, which makes it a good "speed" fallback too, not just
+// a reliability one.
+async function callGroq(fileBuffer, mimeType, submissionType) {
+  if (!GROQ_API_KEY) throw new Error('Groq not configured (GROQ_API_KEY missing)');
+  const dataUrl = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+
+  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GROQ_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: GROQ_VISION_MODEL,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: buildCombinedPrompt(submissionType) },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ]
+      }],
+      temperature: 0.2,
+      max_completion_tokens: 1500,
+      response_format: { type: 'json_object' }
+    })
+  });
+
+  if (!resp.ok) {
+    const errBody = await resp.text().catch(() => '');
+    throw new Error(`Groq API error ${resp.status}: ${errBody.slice(0, 300)}`);
   }
+  const data = await resp.json();
+  const text = data.choices?.[0]?.message?.content || '';
+  return parseCombinedJson(text);
+}
+
+// ─── AI ORCHESTRATOR: try Gemini, fail over to Groq, else null ────────────
+// This makes ONE model call per provider attempt (not two, like the old
+// extractWithGemini + getAiObservations pair did) and enforces a hard
+// per-provider timeout so a slow provider can't stall the whole request.
+async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
+  const providers = [];
+  if (GEMINI_API_KEY) providers.push({ name: 'gemini', fn: callGemini });
+  if (GROQ_API_KEY)   providers.push({ name: 'groq',   fn: callGroq   });
+
+  for (const provider of providers) {
+    try {
+      const parsed = await withTimeout(
+        provider.fn(fileBuffer, mimeType, submissionType),
+        AI_TIMEOUT_MS,
+        provider.name
+      );
+      if (isValidCombinedResult(parsed)) {
+        return { extractedInfo: parsed.extractedInfo, aiObservations: parsed.aiObservations, provider: provider.name };
+      }
+      console.error(`${provider.name} returned malformed data, trying next provider`);
+    } catch (e) {
+      console.error(`${provider.name} failed:`, e.message);
+      // fall through to next provider
+    }
+  }
+  return null; // every configured provider failed -> caller drops to rule-only mode
 }
 
 // ─── CORE ANALYSIS FUNCTION (reused by single + batch) ───────────────────────
 async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSize, username) {
   const analysisId    = uuidv4();
-  const startTime     = Date.now();
+  const startTime      = Date.now();
   const submissionType = detectSubmissionType(fileBuffer, mimeType, originalname);
 
-  // STEP 1: OCR
-  let extractedInfo = await extractWithGemini(fileBuffer, mimeType);
-  const ocrAvailable = extractedInfo !== null;
-  if (!extractedInfo) {
-    extractedInfo = {
-      doctorName:'', hospitalName:'', patientName:'', diagnosis:'',
-      issueDate:'', leaveFrom:'', leaveTo:'', phone:'',
-      referenceNumber:'', signatureSealPresent:'No',
-      address:'', doctorQualifications:'', registrationNumber:'',
-      isFilledTemplate:'No', documentType:'unknown'
-    };
-  }
+  // STEP 1: ONE combined AI call (OCR + fraud observations), with fallback
+  const aiResult = await analyzeWithAI(fileBuffer, mimeType, submissionType);
+  const aiAvailable = aiResult !== null;
+  const ocrAvailable = aiAvailable; // OCR and observations now come from the same call
+
+  let extractedInfo = aiResult?.extractedInfo || {
+    doctorName:'', hospitalName:'', patientName:'', diagnosis:'',
+    issueDate:'', leaveFrom:'', leaveTo:'', phone:'',
+    referenceNumber:'', signatureSealPresent:'No',
+    address:'', doctorQualifications:'', registrationNumber:'',
+    isFilledTemplate:'No', documentType:'unknown'
+  };
 
   // STEP 2: BLANK TEMPLATE CHECK
   const { isBlankTemplate, blankCoreFields, blankRatio } = detectBlankTemplate(extractedInfo);
@@ -212,6 +311,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
       templateWarning: `This is an unfilled official template — ${blankRatio}% of fields are empty. Please upload a completed certificate with patient details filled in.`,
       ocrAvailable,
       aiAvailable: false,
+      aiProvider: aiResult?.provider || null,
       extractedInfo,
       validationChecks: [],
       aiObservations: [
@@ -247,14 +347,13 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     extractedInfo.doctorName
   );
 
-  // STEP 5: AI OBSERVATIONS
-  let aiObservations = await getAiObservations(extractedInfo, fileBuffer, mimeType, submissionType);
-  const aiAvailable  = aiObservations !== null;
+  // STEP 5: AI OBSERVATIONS (already fetched in STEP 1 — reuse, with a rule-only fallback)
+  let aiObservations = aiResult?.aiObservations || null;
   if (!aiObservations) {
     aiObservations = [
-      'AI analysis unavailable — Gemini API not configured. Rule-based checks applied only.',
-      `${passed} of 12 rule checks passed based on extracted certificate data.`,
-      'Add GEMINI_API_KEY to enable deep fraud analysis including template and signature detection.',
+      'AI analysis unavailable — no AI provider responded in time. Rule-based checks applied only.',
+      `${passed} of ${checks.length} rule checks passed based on extracted certificate data.`,
+      'Add GEMINI_API_KEY and/or GROQ_API_KEY to enable deep fraud analysis including template and signature detection.',
       'The rule engine independently verified dates, phone format, leave duration, and field completeness.',
       'Manual review recommended when AI analysis is unavailable.'
     ];
@@ -286,7 +385,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     ? `Likely fraudulent: ${failed} critical checks failed.`
     : riskLevel === 'MEDIUM_RISK'
     ? `Uncertain authenticity: ${failed} checks failed. Manual review recommended.`
-    : `Appears legitimate: ${passed}/12 checks passed with no major red flags.`;
+    : `Appears legitimate: ${passed}/${checks.length} checks passed with no major red flags.`;
 
   auditLog.unshift({
     id: analysisId, timestamp: new Date().toISOString(),
@@ -304,6 +403,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     isBlankTemplate: false,
     ocrAvailable,
     aiAvailable,
+    aiProvider: aiResult?.provider || null,
     extractedInfo,
     validationChecks: checks,
     aiObservations,
@@ -314,7 +414,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
     failedCount: failed,
     confidenceMap,
     prcVerification,
-    rawResponse: `OCR: ${ocrAvailable ? 'OK' : 'FAILED'} | Rules: ${passed}/${checks.length} | AI: ${aiAvailable ? 'OK' : 'FAILED'} | Type: ${submissionType} | Score: ${authenticityScore}`
+    rawResponse: `AI: ${aiAvailable ? `OK (${aiResult.provider})` : 'FAILED'} | Rules: ${passed}/${checks.length} | Type: ${submissionType} | Score: ${authenticityScore}`
   };
 }
 
@@ -370,15 +470,19 @@ app.post('/api/analyze/batch', authMiddleware, (req, res) => {
 // ─── AUDIT & HEALTH ───────────────────────────────────────────────────────────
 app.get('/api/audit',  authMiddleware, (req, res) => res.json(auditLog));
 app.get('/api/health', (req, res) => res.json({
-  status: 'ok', version: '3.0',
+  status: 'ok', version: '3.1',
   geminiConfigured: !!GEMINI_API_KEY,
-  features: ['blank-template-detection','prc-format-check','batch-upload','confidence-scoring','submission-type-detection']
+  groqConfigured: !!GROQ_API_KEY,
+  aiTimeoutMs: AI_TIMEOUT_MS,
+  features: ['blank-template-detection','prc-format-check','batch-upload','confidence-scoring','submission-type-detection','ai-provider-fallback']
 }));
 
 app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
 
 app.listen(PORT, () => {
-  console.log(`✅ MedVerify v3.0 running on port ${PORT}`);
-  console.log(`🤖 Gemini: ${GEMINI_API_KEY ? 'Configured ✓' : 'NOT set → rule-only mode'}`);
-  console.log(`🚀 Features: Blank Template Detection | PRC Format Check | Batch Upload | Confidence Scores`);
+  console.log(`✅ MedVerify v3.1 running on port ${PORT}`);
+  console.log(`🤖 Gemini: ${GEMINI_API_KEY ? `Configured ✓ (${GEMINI_MODEL})` : 'NOT set'}`);
+  console.log(`🤖 Groq fallback: ${GROQ_API_KEY ? `Configured ✓ (${GROQ_VISION_MODEL})` : 'NOT set'}`);
+  if (!GEMINI_API_KEY && !GROQ_API_KEY) console.log('⚠️  No AI provider configured → rule-only mode');
+  console.log(`🚀 Features: Blank Template Detection | PRC Format Check | Batch Upload | Confidence Scores | AI Fallback`);
 });
