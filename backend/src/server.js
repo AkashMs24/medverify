@@ -1,27 +1,27 @@
 require('dotenv').config();
-const express  = require('express');
-const cors     = require('cors');
-const multer   = require('multer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');  // ← FIXED HERE
-const jwt      = require('jsonwebtoken');
-const bcrypt   = require('bcryptjs');
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
-const path     = require('path');
+const path = require('path');
 const { runAllRules, detectBlankTemplate } = require('./rules');
 
-const app        = express();
-const PORT       = process.env.PORT || 5000;
+const app = express();
+const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'medverify_secret_key_2024';
-const NODE_ENV   = process.env.NODE_ENV || 'development';
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
 // ─── AI PROVIDER CONFIG ─────────────────────────────────────────────────────
-const GEMINI_API_KEY   = process.env.GEMINI_API_KEY || '';
-const GROQ_API_KEY     = process.env.GROQ_API_KEY || '';
-const GEMINI_MODEL     = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || 'llama-3.2-11b-vision-preview';
-const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '15000', 10);
+const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
 
-// ← FIXED HERE - Correct initialization for @google/generative-ai
+// Initialize Gemini with correct package
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 app.use(cors({ origin: '*' }));
@@ -32,9 +32,9 @@ app.use(express.static(frontendBuild));
 
 // ─── USERS ─────────────────────────────────────────────────────────────────────
 const users = [
-  { id: '1', username: 'admin',       password: bcrypt.hashSync('admin123',  10), role: 'Administrator', level: 'Admin • System'   },
-  { id: '2', username: 'prof.sharma', password: bcrypt.hashSync('sharma123', 10), role: 'Professor',     level: 'Faculty • HR'     },
-  { id: '3', username: 'dr.mehta',    password: bcrypt.hashSync('mehta123',  10), role: 'Dr. Mehta',     level: 'Doctor • Medical' },
+  { id: '1', username: 'admin', password: bcrypt.hashSync('admin123', 10), role: 'Administrator', level: 'Admin • System' },
+  { id: '2', username: 'prof.sharma', password: bcrypt.hashSync('sharma123', 10), role: 'Professor', level: 'Faculty • HR' },
+  { id: '3', username: 'dr.mehta', password: bcrypt.hashSync('mehta123', 10), role: 'Dr. Mehta', level: 'Doctor • Medical' },
 ];
 
 const auditLog = [];
@@ -43,7 +43,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg','image/jpg','image/png','image/gif','application/pdf'];
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'application/pdf'];
     allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images and PDFs allowed'));
   }
 });
@@ -52,7 +52,7 @@ const uploadBatch = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg','image/jpg','image/png','image/gif','application/pdf'];
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'application/pdf'];
     allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images and PDFs allowed'));
   }
 }).array('certificates', 10);
@@ -60,15 +60,14 @@ const uploadBatch = multer({
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token provided' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Invalid token' }); }
+  try { req.user = jwt.verify(token, JWT_SECRET); next(); } catch { res.status(401).json({ error: 'Invalid token' }); }
 };
 
 // ─── DETECT SUBMISSION TYPE ────────────────────────────────────────────────
 function detectSubmissionType(fileBuffer, mimeType, filename) {
-  const isPDF      = mimeType === 'application/pdf';
-  const isImage    = mimeType.startsWith('image/');
-  const isGIF      = mimeType === 'image/gif';
+  const isPDF = mimeType === 'application/pdf';
+  const isImage = mimeType.startsWith('image/');
+  const isGIF = mimeType === 'image/gif';
   const looksLikeScreenshot = filename && /screenshot|screen.shot|capture|snip/i.test(filename);
 
   if (isPDF) return 'pdf';
@@ -163,10 +162,10 @@ function parseCombinedJson(rawText) {
 }
 
 function isValidCombinedResult(parsed) {
-  return !!parsed
-    && parsed.extractedInfo && typeof parsed.extractedInfo === 'object'
-    && Array.isArray(parsed.aiObservations)
-    && parsed.aiObservations.length > 0;
+  return !!parsed &&
+    parsed.extractedInfo && typeof parsed.extractedInfo === 'object' &&
+    Array.isArray(parsed.aiObservations) &&
+    parsed.aiObservations.length > 0;
 }
 
 function withTimeout(promise, ms, label) {
@@ -180,28 +179,49 @@ function withTimeout(promise, ms, label) {
 // ─── FIXED: GEMINI CALL ──────────────────────────────────────────────────
 async function callGemini(fileBuffer, mimeType, submissionType) {
   if (!genAI) throw new Error('Gemini not configured (GEMINI_API_KEY missing)');
-  
-  // Correct usage for @google/generative-ai
-  const model = genAI.getGenerativeModel({ 
-    model: GEMINI_MODEL 
-  });
-  
-  const prompt = buildCombinedPrompt(submissionType);
-  
-  const result = await model.generateContent([
-    {
-      inlineData: {
-        mimeType: mimeType,
-        data: fileBuffer.toString('base64')
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: GEMINI_MODEL,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 2048,
       }
-    },
-    { text: prompt }
-  ]);
-  
-  const response = await result.response;
-  const text = response.text();
-  
-  return parseCombinedJson(text);
+    });
+
+    const base64Data = fileBuffer.toString('base64');
+    const prompt = buildCombinedPrompt(submissionType);
+
+    const result = await model.generateContent({
+      contents: [{
+        role: 'user',
+        parts: [{
+          inline_data: {
+            mime_type: mimeType,
+            data: base64Data
+          }
+        },
+        {
+          text: prompt
+        }
+        ]
+      }]
+    });
+
+    const response = result.response;
+    const text = response.text();
+
+    if (!text || text.trim() === '') {
+      throw new Error('Empty response from Gemini');
+    }
+
+    const parsed = parseCombinedJson(text);
+    return parsed;
+
+  } catch (error) {
+    console.error('Gemini API error:', error.message);
+    throw new Error(`Gemini failed: ${error.message}`);
+  }
 }
 
 // ─── GROQ CALL ──────────────────────────────────────────────────────────
@@ -242,42 +262,52 @@ async function callGroq(fileBuffer, mimeType, submissionType) {
 // ─── AI ORCHESTRATOR ────────────────────────────────────────────────────
 async function analyzeWithAI(fileBuffer, mimeType, submissionType) {
   const providers = [];
+
+  // Try Groq first as it's often more reliable
+  if (GROQ_API_KEY) providers.push({ name: 'groq', fn: callGroq });
   if (GEMINI_API_KEY) providers.push({ name: 'gemini', fn: callGemini });
-  if (GROQ_API_KEY)   providers.push({ name: 'groq',   fn: callGroq   });
 
   for (const provider of providers) {
     try {
+      console.log(`🔄 Trying ${provider.name}...`);
       const parsed = await withTimeout(
         provider.fn(fileBuffer, mimeType, submissionType),
         AI_TIMEOUT_MS,
         provider.name
       );
       if (isValidCombinedResult(parsed)) {
-        return { extractedInfo: parsed.extractedInfo, aiObservations: parsed.aiObservations, provider: provider.name };
+        console.log(`✅ ${provider.name} succeeded`);
+        return {
+          extractedInfo: parsed.extractedInfo,
+          aiObservations: parsed.aiObservations,
+          provider: provider.name
+        };
       }
-      console.error(`${provider.name} returned malformed data, trying next provider`);
+      console.error(`${provider.name} returned malformed data`);
     } catch (e) {
       console.error(`${provider.name} failed:`, e.message);
     }
   }
+
+  console.log('❌ All AI providers failed');
   return null;
 }
 
 // ─── CORE ANALYSIS FUNCTION ──────────────────────────────────────────────────
 async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSize, username) {
-  const analysisId    = uuidv4();
-  const startTime      = Date.now();
+  const analysisId = uuidv4();
+  const startTime = Date.now();
   const submissionType = detectSubmissionType(fileBuffer, mimeType, originalname);
 
   const aiResult = await analyzeWithAI(fileBuffer, mimeType, submissionType);
   const aiAvailable = aiResult !== null;
 
   let extractedInfo = aiResult?.extractedInfo || {
-    doctorName:'', hospitalName:'', patientName:'', diagnosis:'',
-    issueDate:'', leaveFrom:'', leaveTo:'', phone:'',
-    referenceNumber:'', signatureSealPresent:'No',
-    address:'', doctorQualifications:'', registrationNumber:'',
-    isFilledTemplate:'No', documentType:'unknown'
+    doctorName: '', hospitalName: '', patientName: '', diagnosis: '',
+    issueDate: '', leaveFrom: '', leaveTo: '', phone: '',
+    referenceNumber: '', signatureSealPresent: 'No',
+    address: '', doctorQualifications: '', registrationNumber: '',
+    isFilledTemplate: 'No', documentType: 'unknown'
   };
 
   const { isBlankTemplate, blankCoreFields, blankRatio } = detectBlankTemplate(extractedInfo);
@@ -338,7 +368,7 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
 
   let authenticityScore;
   if (aiAvailable) {
-    const negativeWords = ['fraudulent','suspicious','conflict','error','fake','template','invalid','missing','generic','absent','blank','unclear','forged','fabricated'];
+    const negativeWords = ['fraudulent', 'suspicious', 'conflict', 'error', 'fake', 'template', 'invalid', 'missing', 'generic', 'absent', 'blank', 'unclear', 'forged', 'fabricated'];
     const negCount = aiObservations.join(' ').toLowerCase().split(/\s+/)
       .filter(w => negativeWords.some(n => w.includes(n))).length;
     const aiScore = Math.max(0, 100 - (negCount * 7));
@@ -350,15 +380,15 @@ async function analyzeOneCertificate(fileBuffer, mimeType, originalname, fileSiz
   if (submissionType === 'screenshot') authenticityScore = Math.max(0, authenticityScore - 5);
   if (prcVerification.verified === 'format_ok') authenticityScore = Math.min(100, authenticityScore + 5);
 
-  const riskLevel = authenticityScore >= 70 ? 'LOW_RISK'
-                  : authenticityScore >= 40 ? 'MEDIUM_RISK'
-                  : 'HIGH_RISK';
+  const riskLevel = authenticityScore >= 70 ? 'LOW_RISK' :
+    authenticityScore >= 40 ? 'MEDIUM_RISK' :
+    'HIGH_RISK';
 
-  const verdict = riskLevel === 'HIGH_RISK'
-    ? `Likely fraudulent: ${failed} critical checks failed.`
-    : riskLevel === 'MEDIUM_RISK'
-    ? `Uncertain authenticity: ${failed} checks failed. Manual review recommended.`
-    : `Appears legitimate: ${passed}/${checks.length} checks passed with no major red flags.`;
+  const verdict = riskLevel === 'HIGH_RISK' ?
+    `Likely fraudulent: ${failed} critical checks failed.` :
+    riskLevel === 'MEDIUM_RISK' ?
+    `Uncertain authenticity: ${failed} checks failed. Manual review recommended.` :
+    `Appears legitimate: ${passed}/${checks.length} checks passed with no major red flags.`;
 
   auditLog.unshift({
     id: analysisId, timestamp: new Date().toISOString(),
@@ -425,13 +455,13 @@ app.post('/api/analyze/batch', authMiddleware, (req, res) => {
         timestamp: new Date().toISOString(),
         results,
         summary: {
-          highRisk:    results.filter(r => r.riskLevel === 'HIGH_RISK').length,
-          mediumRisk:  results.filter(r => r.riskLevel === 'MEDIUM_RISK').length,
-          lowRisk:     results.filter(r => r.riskLevel === 'LOW_RISK').length,
-          templates:   results.filter(r => r.isBlankTemplate).length,
-          avgScore:    Math.round(results.filter(r => r.authenticityScore !== null)
-                         .reduce((s, r) => s + r.authenticityScore, 0) /
-                         Math.max(1, results.filter(r => r.authenticityScore !== null).length))
+          highRisk: results.filter(r => r.riskLevel === 'HIGH_RISK').length,
+          mediumRisk: results.filter(r => r.riskLevel === 'MEDIUM_RISK').length,
+          lowRisk: results.filter(r => r.riskLevel === 'LOW_RISK').length,
+          templates: results.filter(r => r.isBlankTemplate).length,
+          avgScore: Math.round(results.filter(r => r.authenticityScore !== null)
+            .reduce((s, r) => s + r.authenticityScore, 0) /
+            Math.max(1, results.filter(r => r.authenticityScore !== null).length))
         }
       });
     } catch (error) {
@@ -441,13 +471,13 @@ app.post('/api/analyze/batch', authMiddleware, (req, res) => {
 });
 
 // ─── AUDIT & HEALTH ───────────────────────────────────────────────────────────
-app.get('/api/audit',  authMiddleware, (req, res) => res.json(auditLog));
+app.get('/api/audit', authMiddleware, (req, res) => res.json(auditLog));
 app.get('/api/health', (req, res) => res.json({
   status: 'ok', version: '3.1',
   geminiConfigured: !!GEMINI_API_KEY,
   groqConfigured: !!GROQ_API_KEY,
   aiTimeoutMs: AI_TIMEOUT_MS,
-  features: ['blank-template-detection','prc-format-check','batch-upload','confidence-scoring','submission-type-detection','ai-provider-fallback']
+  features: ['blank-template-detection', 'prc-format-check', 'batch-upload', 'confidence-scoring', 'submission-type-detection', 'ai-provider-fallback']
 }));
 
 app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
